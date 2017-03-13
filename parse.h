@@ -10,8 +10,9 @@ using namespace Lexer;
 namespace Parser {
 	
 	// forward declarations
-	struct Datatype_Information_Base;
+	struct Datatype_Information;
 	struct Struct_Information;
+	class  Parse_Context;
 
 	enum Operator_Associativity {
 		ASSOC_LEFT,
@@ -118,11 +119,13 @@ namespace Parser {
 		Expression(Expression_Type t): type(t) { }
 		virtual ~Expression() {}
 		virtual std::string to_string() const = 0;
+		virtual Datatype_Information* typecheck(Parse_Context *) = 0;
 		virtual void print(int) const;
 		bool is_binary_type(Binary_Operator_Type type) const;
 		bool is_unary_type(Unary_Operator_Type type) const;
 		
 		Expression_Type type;
+		Datatype_Information* eval;
 		std::string word;	
 		Expression* parent = nullptr;	
 		Leaf side; // only applicable if parent is binary operator
@@ -133,14 +136,17 @@ namespace Parser {
 	struct Expression_Operator : public Expression {
 
 		Expression_Operator(Expression_Type t): Expression(t) { }
-		virtual std::string to_string() const = 0;
+		virtual std::string to_string() const override = 0;
+		virtual Datatype_Information* typecheck(Parse_Context *) override = 0;
 
 		const Operator_Descriptor* desc;
+		const Token* tok;
 	};
 
 	struct Expression_Binary : public Expression_Operator {
 		Expression_Binary(): Expression_Operator(EXPRESSION_OPERATOR_BINARY) { }
 		virtual std::string to_string() const override; 
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 		virtual void print(int) const override;
 
 		static Binary_Operator_Type word_to_type(const std::string&);
@@ -156,6 +162,7 @@ namespace Parser {
 	struct Expression_Unary : public Expression_Operator {
 		Expression_Unary(): Expression_Operator(EXPRESSION_OPERATOR_UNARY) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 		virtual void print(int) const override;
 
 		static Unary_Operator_Type word_to_type(const std::string&);
@@ -170,15 +177,17 @@ namespace Parser {
 	struct Expression_Cast : public Expression_Operator {
 		Expression_Cast(): Expression_Operator(EXPRESSION_CAST) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 		virtual void print(int) const override;
 
-		Datatype_Information_Base* value;
+		Datatype_Information* value;
 		Expression* operand;
 	};
 
 	struct Expression_Integer_Literal : public Expression {
 		Expression_Integer_Literal(): Expression(EXPRESSION_INTEGER_LITERAL) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 
 		int64_t value;
 	};
@@ -186,6 +195,7 @@ namespace Parser {
 	struct Expression_Float_Literal : public Expression {
 		Expression_Float_Literal(): Expression(EXPRESSION_FLOAT_LITERAL) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 
 		double value;
 	};
@@ -193,6 +203,7 @@ namespace Parser {
 	struct Expression_String_Literal : public Expression {
 		Expression_String_Literal(): Expression(EXPRESSION_STRING_LITERAL) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 
 		std::string value;
 	};
@@ -200,6 +211,7 @@ namespace Parser {
 	struct Expression_Identifier : public Expression {
 		Expression_Identifier(): Expression(EXPRESSION_IDENTIFIER) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 
 		std::string value;
 	};
@@ -207,8 +219,9 @@ namespace Parser {
 	struct Expression_Datatype : public Expression {
 		Expression_Datatype(): Expression(EXPRESSION_DATATYPE) { }
 		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
 
-		Datatype_Information_Base* value;
+		Datatype_Information* value;
 	};
 	
 	struct Variable_Declaration {
@@ -219,15 +232,21 @@ namespace Parser {
 		
 		bool has_name = true; // only used for procedure arguments	
 		std::string identifier;
-		Datatype_Information_Base* dt;
+		Datatype_Information* dt;
 	};
 
-	struct Datatype_Information_Base {
-		virtual ~Datatype_Information_Base() {};
-		Datatype_Information_Base() {}
-		Datatype_Information_Base(const Datatype_Information_Base&);
-		Datatype_Information_Base* clone() const;
+	struct Datatype_Information {
+		virtual ~Datatype_Information() {};
+		Datatype_Information() {}
+		Datatype_Information(const Datatype_Information&);
+		Datatype_Information* clone() const;
 		std::string to_string() const;
+		bool is_pointer() const { return ptr_dim > 0; }
+		bool is_array() const { return arr_dim > 0; }
+		bool is_int() const { return type_name == "int" && !is_pointer() && !is_array(); }
+		bool is_float() const { return type_name == "float" && !is_pointer() && !is_array(); }
+		bool is_byte() const { return type_name == "byte" && !is_pointer() && !is_array(); }
+		bool is_bool() const { return type_name == "bool" && !is_pointer() && !is_array(); }
 
 		std::string type_name;
 		int ptr_dim = 0;
@@ -243,7 +262,7 @@ namespace Parser {
 		Struct_Information* parent_struct;
 	};
 
-	struct Struct_Information : public Datatype_Information_Base {
+	struct Struct_Information : public Datatype_Information {
 		Struct_Information(const Struct_Information&);
 		Struct_Information() {}
 
@@ -251,7 +270,7 @@ namespace Parser {
 		std::vector<Struct_Field *> fields;
 	};
 
-	struct Procedure_Information : public Datatype_Information_Base {
+	struct Procedure_Information : public Datatype_Information {
 		Procedure_Information(const Procedure_Information&);
 		Procedure_Information() {}
 		std::string to_string() const;
@@ -260,15 +279,20 @@ namespace Parser {
 		
 		bool is_implemented = false;
 		std::vector<Variable_Declaration *> args;
-		Datatype_Information_Base* ret;
+		Datatype_Information* ret;
 	};
 
-	struct Integer_Information : public Datatype_Information_Base {
+	struct Integer_Information : public Datatype_Information {
 		Integer_Information(const Integer_Information&);
 		Integer_Information() {}
 	};
 
-	struct Void_Information : public Datatype_Information_Base {
+	struct Float_Information : public Datatype_Information {
+		Float_Information(const Float_Information&);
+		Float_Information() {}
+	};
+
+	struct Void_Information : public Datatype_Information {
 		Void_Information(const Void_Information&);
 		Void_Information() {}
 	};
@@ -277,10 +301,14 @@ namespace Parser {
 		private:
 			int token_index;
 			int marked_index;
+			int fail_indent = 0;
 			Token* token;	
 			Lex_Context* lex_context;	
-			std::vector<Datatype_Information_Base *> defined_types;
+			std::vector<Datatype_Information *> defined_types;
 			std::vector<Procedure_Information *> defined_procedures;
+			Integer_Information* type_int;
+			Void_Information* type_void;
+			Float_Information* type_float;
 			
 			void report_error(const std::string&) const;	
 
@@ -310,22 +338,32 @@ namespace Parser {
 
 			Variable_Declaration* parse_variable_declaration();
 			Struct_Field* parse_struct_field(Struct_Information*);
-			Datatype_Information_Base* parse_datatype();
+			Datatype_Information* parse_datatype();
 			Expression* parse_expression();
+			Expression* parse_expression_and_typecheck();
 
 			void mark(const std::string&, const std::string&);
 			void mark(const std::string&);
 
-			void register_type(Datatype_Information_Base*);
+			void register_type(Datatype_Information*);
 			void register_procedure(Procedure_Information*);
 
 			Procedure_Information* get_procedure(const std::string&);
 			Procedure_Information* get_procedure(const std::string&, const std::string&);
-			Datatype_Information_Base* get_type(const std::string&) const;
+			Datatype_Information* get_type(const std::string&) const;
 
 		public:
 
 		friend Parse_Context* generate_tree(Lex_Context*);
+		friend class Expression;
+		friend class Expression_Binary;
+		friend class Expression_Unary;
+		friend class Expression_Cast;
+		friend class Expression_Integer_Literal;
+		friend class Expression_Float_Literal;
+		friend class Expression_String_Literal;
+		friend class Expression_Identifier;
+		friend class Expression_Datatype;
 	};
 
 	Parse_Context* generate_tree(Lex_Context*);

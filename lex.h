@@ -31,7 +31,9 @@ namespace Lexer {
 		friend Lex_Context* generate_tokens(const std::string&);
 
 		public:
+			Lex_Context(const std::string& fname): handle(fname, std::ifstream::binary) { }
 			std::vector<Token>* tokens;
+			std::vector<std::string> raw_file; // by line
 							
 		private:
 			int get();

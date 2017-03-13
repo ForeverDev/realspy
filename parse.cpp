@@ -62,12 +62,12 @@ static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor("||",       3, ASSOC_LEFT, OP_BINARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("==",       4, ASSOC_LEFT, OP_BINARY, {}),
 	Operator_Descriptor("!=",       4, ASSOC_LEFT, OP_BINARY, {}),
-	Operator_Descriptor(">",        6, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT, DISALLOW_POINTER}),
-	Operator_Descriptor(">=",       6, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT}),
-	Operator_Descriptor("<",        6, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT}),
-	Operator_Descriptor("<=",       6, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT}),
-	Operator_Descriptor("<<",       7, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT, DISALLOW_POINTER}),
-	Operator_Descriptor(">>",       7, ASSOC_LEFT, OP_BINARY, {DISALLOW_FLOAT, DISALLOW_POINTER}),
+	Operator_Descriptor(">",        6, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
+	Operator_Descriptor(">=",       6, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
+	Operator_Descriptor("<",        6, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
+	Operator_Descriptor("<=",       6, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
+	Operator_Descriptor("<<",       7, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
+	Operator_Descriptor(">>",       7, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
 	Operator_Descriptor("+",        8, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT}),
 	Operator_Descriptor("-",        8, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
 	Operator_Descriptor("*",        9, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
@@ -81,15 +81,15 @@ static const std::vector<Operator_Descriptor> operator_table {
 };
 
 // DATATYPE IMPLEMENTATION 
-Datatype_Information_Base::Datatype_Information_Base(const Datatype_Information_Base& to_copy) {
+Datatype_Information::Datatype_Information(const Datatype_Information& to_copy) {
 	ptr_dim = to_copy.ptr_dim;
 	arr_dim = to_copy.arr_dim;
 	size = to_copy.size;
 	type_name = to_copy.type_name;
 }
 
-Datatype_Information_Base*
-Datatype_Information_Base::clone() const {
+Datatype_Information*
+Datatype_Information::clone() const {
 	if (const Struct_Information* a = dynamic_cast<const Struct_Information *>(this)) {
 		return new Struct_Information(*a);
 	}
@@ -97,7 +97,7 @@ Datatype_Information_Base::clone() const {
 }
 
 std::string
-Datatype_Information_Base::to_string() const {
+Datatype_Information::to_string() const {
 	std::ostringstream buf;
 	for (int i = 0; i < ptr_dim; i++) {
 		buf << '^';
@@ -112,7 +112,7 @@ Datatype_Information_Base::to_string() const {
 std::string
 Procedure_Information::to_string() const {
 	std::ostringstream buf;
-	buf << Datatype_Information_Base::to_string();
+	buf << Datatype_Information::to_string();
 	buf << ": (";
 	size_t nargs = args.size();
 	for (int i = 0; i < nargs; i++) {
@@ -126,14 +126,14 @@ Procedure_Information::to_string() const {
 	return buf.str();
 }
 
-Struct_Information::Struct_Information(const Struct_Information& to_copy): Datatype_Information_Base(to_copy) {
+Struct_Information::Struct_Information(const Struct_Information& to_copy): Datatype_Information(to_copy) {
 	for (const auto field: to_copy.fields) {
 		fields.push_back(new Struct_Field(*field));
 	}
 	is_complete = to_copy.is_complete;
 }
 
-Procedure_Information::Procedure_Information(const Procedure_Information& to_copy): Datatype_Information_Base(to_copy) {
+Procedure_Information::Procedure_Information(const Procedure_Information& to_copy): Datatype_Information(to_copy) {
 	for (const auto arg: to_copy.args) {
 		args.push_back(new Variable_Declaration(*arg));
 	}
@@ -157,18 +157,18 @@ Procedure_Information::get_signature() const {
 	return Procedure_Information::make_signature(args);
 }
 
-Integer_Information::Integer_Information(const Integer_Information& to_copy): Datatype_Information_Base(to_copy) {
+Integer_Information::Integer_Information(const Integer_Information& to_copy): Datatype_Information(to_copy) {
 
 }
 
-Void_Information::Void_Information(const Void_Information& to_copy): Datatype_Information_Base(to_copy) {
+Void_Information::Void_Information(const Void_Information& to_copy): Datatype_Information(to_copy) {
 
 }
 
 // VARIABLE DECLARATION IMPLEMENTATION
 Variable_Declaration::Variable_Declaration(const Variable_Declaration& to_copy) {
 	identifier = to_copy.identifier;
-	dt = new Datatype_Information_Base(*to_copy.dt);
+	dt = new Datatype_Information(*to_copy.dt);
 }
 
 Variable_Declaration*
@@ -306,6 +306,97 @@ Expression_Cast::print(int indent = 0) const {
 	operand->print(indent + 1);
 }
 
+// ... typecheck methods ...
+Datatype_Information*
+Expression_Binary::typecheck(Parse_Context* context) {
+
+	auto has_rule = [this](Typecheck_Rule rule) -> bool {
+		for (auto r: desc->rules) {
+			if (rule == r) {
+				return true;
+			}
+		}
+		return false;	
+	};
+
+	auto left_eval = left->typecheck(context);
+	auto right_eval = right->typecheck(context);
+
+	if (has_rule(IGNORE_ALL_RULES)) {
+		// comma should be the only operator that has
+		// ignore all rules for now... the evaluated
+		// type of the comma doesn't really matter,
+		// so for now just return the type of the left...
+		// this may need to be changed in the future
+		return eval = left_eval;
+	}
+
+	if (has_rule(ENFORCE_INTEGER) || has_rule(ENFORCE_BOOL)) {
+		bool violated_left;
+		bool violated_right;
+		std::string expected_type;
+		if (has_rule(ENFORCE_INTEGER)) {
+			violated_left = !left_eval->is_int();
+			violated_right = !right_eval->is_int();
+			expected_type = "int";
+		} else { 
+			violated_left = !left_eval->is_bool();
+			violated_right = !right_eval->is_bool();
+			expected_type = "bool";
+		}
+		if (violated_left || violated_right) {
+			auto side_name = violated_left ? "left" : "right";
+			auto side_got  = violated_left ? left_eval->to_string() : right_eval->to_string();
+			std::stringstream message;
+			message << side_name;
+			message << " operand of operator '";
+			message << to_string();
+			message << "' must be of type '";
+			message << expected_type;
+			message << "' (got type '";
+			message << side_got;
+			message << "')";
+			context->fail_indent = tok->col;
+			context->report_error(message.str());
+		}
+	}
+}
+
+Datatype_Information*
+Expression_Unary::typecheck(Parse_Context* context) {
+	auto operand_eval = operand->typecheck(context);
+}
+
+Datatype_Information*
+Expression_Cast::typecheck(Parse_Context* context) {
+
+}
+
+Datatype_Information*
+Expression_Integer_Literal::typecheck(Parse_Context* context) {
+	return context->type_int;
+}
+
+Datatype_Information*
+Expression_Float_Literal::typecheck(Parse_Context* context) {
+	return context->type_float;
+}
+
+Datatype_Information*
+Expression_String_Literal::typecheck(Parse_Context* context) {
+
+}
+
+Datatype_Information*
+Expression_Identifier::typecheck(Parse_Context* context) {
+
+}
+
+Datatype_Information*
+Expression_Datatype::typecheck(Parse_Context* context) {
+	
+}
+
 // PARSE CONTEXT IMPLEMENTATION
 void
 Parse_Context::report_error(const std::string& message) const {
@@ -318,14 +409,25 @@ Parse_Context::report_error(const std::string& message) const {
 		word = &token->word;
 	}
 	std::cerr << "\n-------- SPYRE PARSE ERROR -------\n\n";
-	std::cerr << "line:    " << line << std::endl;
 	/*
 	std::cerr << "col:     " << col << std::endl;
 	if (word) {
 		std::cerr << "token:   '" << *word << "'" << std::endl;
 	}
 	*/
-	std::cerr << "message: " << message << std::endl;
+	std::cerr << "message: " << message << std::endl << std::endl;
+	std::cerr << "line:    " << line << std::endl;
+	std::cerr << "near:    " << lex_context->raw_file[line - 1] << std::endl;
+	std::cerr << "         ";
+	if (fail_indent > 0) {
+		for (int i = 0; i < fail_indent; i++) {
+			std::cerr << "_";
+		}
+		std::cerr << "^";
+		for (int i = fail_indent + 1; i < lex_context->raw_file[line - 1].length(); i++) {
+			std::cerr << "_";
+		}
+	}
 	std::cerr << std::endl << std::endl;
 	std::exit(1);
 }
@@ -422,7 +524,7 @@ Parse_Context::is_operator() const {
 }
 
 void
-Parse_Context::register_type(Datatype_Information_Base* dt) {
+Parse_Context::register_type(Datatype_Information* dt) {
 	if (get_type(dt->type_name)) {
 		report_error("a type with the name '" + dt->type_name + "' already exists");
 	}
@@ -464,9 +566,9 @@ Parse_Context::get_procedure(const std::string& name, const std::string& signatu
 	return found;
 }
 
-Datatype_Information_Base*
+Datatype_Information*
 Parse_Context::get_type(const std::string& type_name) const {
-	for (Datatype_Information_Base* dt: defined_types) {
+	for (Datatype_Information* dt: defined_types) {
 		if (dt->type_name == type_name) {
 			return dt;
 		}
@@ -510,7 +612,7 @@ Parse_Context::handle_struct_declaration() {
 		register_type(info);
 	} else if (on("{")) {
 		info->is_complete = true;
-		Datatype_Information_Base* existing = get_type(info->type_name);
+		Datatype_Information* existing = get_type(info->type_name);
 		Struct_Information* existing_str = dynamic_cast<Struct_Information *>(existing);
 		if (existing) {
 			if (!existing_str) {
@@ -599,7 +701,7 @@ Parse_Context::handle_standalone_statement() {
 		return;
 	}
 	mark(";");
-	parse_expression();
+	parse_expression_and_typecheck();
 }
 
 void
@@ -739,10 +841,12 @@ Parse_Context::parse_expression() {
 					if (desc->type == OP_BINARY) {
 						auto op = new Expression_Binary();
 						op->value = Expression_Binary::word_to_type(token->word);
+						op->tok = token;
 						push = op;
 					} else if (desc->type == OP_UNARY) {
 						auto op = new Expression_Unary();
 						op->value = Expression_Unary::word_to_type(token->word);
+						op->tok = token;
 						push = op;
 					}
 					push->desc = desc;
@@ -828,7 +932,14 @@ Parse_Context::parse_expression() {
 
 }
 
-Datatype_Information_Base*
+Expression*
+Parse_Context::parse_expression_and_typecheck() {
+	auto exp = parse_expression();
+	exp->typecheck(this);
+	return exp;
+}
+
+Datatype_Information*
 Parse_Context::parse_datatype() {
 
 	int ptr_dim = 0;
@@ -845,7 +956,7 @@ Parse_Context::parse_datatype() {
 		eat();
 	}
 
-	Datatype_Information_Base* templ;
+	Datatype_Information* templ;
 	
 	if (on("(")) {
 		
@@ -856,7 +967,7 @@ Parse_Context::parse_datatype() {
 		if (!templ) {
 			report_error("invalid type name '" + token->word + "'");
 		}
-		Datatype_Information_Base* ret = new Datatype_Information_Base(*templ); 
+		Datatype_Information* ret = new Datatype_Information(*templ); 
 		ret->ptr_dim = ptr_dim;
 		ret->arr_dim = arr_dim;
 		eat();
@@ -892,16 +1003,23 @@ Parse_Context::parse_struct_field(Struct_Information* parent_struct) {
 
 void
 Parse_Context::init_types() {
-	Integer_Information* type_int = new Integer_Information;
-	type_int->type_name = "int";
-	type_int->size = 8;
+	Integer_Information* t_int = new Integer_Information;
+	t_int->type_name = "int";
+	t_int->size = 8;
+	type_int = t_int;
+	register_type(t_int);
 
-	Void_Information* type_void = new Void_Information;
-	type_void->type_name = "void";
-	type_void->size = 0;
+	Float_Information* t_float = new Float_Information;
+	t_float->type_name = "float";
+	t_float->size = 8;
+	type_float = t_float;
+	register_type(t_float);
 
-	register_type(type_int);
-	register_type(type_void);
+	Void_Information* t_void = new Void_Information;
+	t_void->type_name = "void";
+	t_void->size = 0;
+	type_void = t_void;
+	register_type(t_void);
 }
 
 Parse_Context*
@@ -923,7 +1041,7 @@ Parser::generate_tree(Lex_Context* lex_context) {
 		}
 	}
 
-	Datatype_Information_Base* dt = new Struct_Information;
+	Datatype_Information* dt = new Struct_Information;
 	dt->clone();
 
 	return parser;

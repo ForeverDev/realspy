@@ -14,8 +14,15 @@ static const std::vector<std::string> reserved_words {
 
 int
 Lex_Context::get() {
-	col++;
-	return handle.get();
+	int at = handle.get();
+	if (at == '\n') {
+		col = 1;
+	} else if (at == '\t') {
+		col += 4;
+	} else {
+		col++;
+	}
+	return at;
 }
 
 int
@@ -47,7 +54,7 @@ Lex_Context::report_error(const std::string& message) const {
 void
 Lex_Context::append_token(Token& t) {
 	t.line = line;
-	t.col = col;
+	t.col = col - t.word.length() - 1;
 	if (tokens->size() > 0) {
 		Token& back = tokens->back();
 		switch (t.type) {
@@ -202,10 +209,9 @@ Lex_Context::handle_operator() {
 
 Lex_Context*
 Lexer::generate_tokens(const std::string& filename) {
-	
-	Lex_Context* state = new Lex_Context;
+
+	Lex_Context* state = new Lex_Context(filename);
 	state->tokens = new std::vector<Token>();
-	state->handle = std::ifstream(filename, std::ifstream::binary);
 	if (!state->handle.is_open()) {
 		std::cerr << "couldn't open '" << filename << "' for reading.\n";
 		std::exit(EXIT_FAILURE);
@@ -214,6 +220,19 @@ Lexer::generate_tokens(const std::string& filename) {
 	state->col = 1;
 	state->on = state->handle.get();
 	state->next = state->handle.get();
+	state->handle.seekg(0);
+
+	std::stringstream line_make;
+	while ((state->on = state->peek()) != EOF) {
+		if (state->on == '\n') {
+			state->raw_file.push_back(line_make.str());
+			line_make.clear();
+		} else {
+			line_make << static_cast<char>(state->on);
+		}
+		state->get();
+	}
+
 	state->handle.seekg(0);
 	
 	while ((state->on = state->peek()) != EOF) {
