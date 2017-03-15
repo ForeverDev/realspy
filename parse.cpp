@@ -1,5 +1,6 @@
 #include <sstream>
 #include <iostream>
+#include "assert.h"
 #include "parse.h"
 
 using namespace Parser;
@@ -49,15 +50,15 @@ std::map<std::string, Unary_Operator_Type> Expression_Unary::word_map {
 
 static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor(",",        1, ASSOC_LEFT, OP_BINARY, {IGNORE_ALL_RULES}),
-	Operator_Descriptor("=",        2, ASSOC_LEFT, OP_BINARY, {}),
-	Operator_Descriptor("+=",       2, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT}),
-	Operator_Descriptor("-=",       2, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT}),
-	Operator_Descriptor("*=",       2, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
-	Operator_Descriptor("/=",       2, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
-	Operator_Descriptor("%=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
-	Operator_Descriptor("&=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
-	Operator_Descriptor("|=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
-	Operator_Descriptor("^=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
+	Operator_Descriptor("=",        2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE}),
+	Operator_Descriptor("+=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ALLOW_POINTER_LEFT_SIDE_INT}),
+	Operator_Descriptor("-=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ALLOW_POINTER_LEFT_SIDE_INT}),
+	Operator_Descriptor("*=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, DISALLOW_POINTER}),
+	Operator_Descriptor("/=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, DISALLOW_POINTER}),
+	Operator_Descriptor("%=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ENFORCE_INTEGER}),
+	Operator_Descriptor("&=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ENFORCE_INTEGER}),
+	Operator_Descriptor("|=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ENFORCE_INTEGER}),
+	Operator_Descriptor("^=",       2, ASSOC_LEFT, OP_BINARY, {ENFORCE_LEFT_L_VALUE, ENFORCE_INTEGER}),
 	Operator_Descriptor("&&",       3, ASSOC_LEFT, OP_BINARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("||",       3, ASSOC_LEFT, OP_BINARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("==",       4, ASSOC_LEFT, OP_BINARY, {}),
@@ -68,12 +69,12 @@ static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor("<=",       6, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
 	Operator_Descriptor("<<",       7, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
 	Operator_Descriptor(">>",       7, ASSOC_LEFT, OP_BINARY, {ENFORCE_INTEGER}),
-	Operator_Descriptor("+",        8, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT}),
-	Operator_Descriptor("-",        8, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
+	Operator_Descriptor("+",        8, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT, DISALLOW_POINTER}),
+	Operator_Descriptor("-",        8, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT, DISALLOW_POINTER}),
 	Operator_Descriptor("*",        9, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
 	Operator_Descriptor("/",        9, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
 	Operator_Descriptor("__CAST__", 10, ASSOC_RIGHT, OP_UNARY, {IGNORE_ALL_RULES}),
-	Operator_Descriptor("@",        10, ASSOC_RIGHT, OP_UNARY, {DISALLOW_LITERAL}),
+	Operator_Descriptor("@",        10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_L_VALUE}),
 	Operator_Descriptor("$",        10, ASSOC_RIGHT, OP_UNARY, {DISALLOW_NON_POINTER}),
 	Operator_Descriptor("!",        10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("new",      10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_DATATYPE}),
@@ -94,6 +95,20 @@ Datatype_Information::clone() const {
 		return new Struct_Information(*a);
 	}
 	return nullptr; // should never be reached
+}
+
+bool
+Datatype_Information::matches(const Datatype_Information& other) const {
+	if (type_name != other.type_name) {
+		return false;
+	}
+	if (ptr_dim != other.ptr_dim) {
+		return false;
+	}
+	if (arr_dim != other.arr_dim) {
+		return false;
+	}
+	return true;
 }
 
 std::string
@@ -162,6 +177,10 @@ Integer_Information::Integer_Information(const Integer_Information& to_copy): Da
 }
 
 Void_Information::Void_Information(const Void_Information& to_copy): Datatype_Information(to_copy) {
+
+}
+
+Bool_Information::Bool_Information(const Bool_Information& to_copy): Datatype_Information(to_copy) {
 
 }
 
@@ -318,8 +337,41 @@ Expression_Binary::typecheck(Parse_Context* context) {
 		}
 		return false;	
 	};
-
+	
 	auto left_eval = left->typecheck(context);
+
+	// '.' operator is a special case
+	if (value == FIND_MEMBER) {
+		auto struct_data = dynamic_cast<Struct_Information *>(left_eval);
+		if (!struct_data) {
+			std::stringstream message;
+			message << "the left side of the '.' operator must evaluate to an ";
+			message << "object or a pointer to an object.  (got type '";
+			message << left_eval->to_string();
+			message << "')";
+			context->report_error_at_indent(message.str(), token->col);
+		}
+		if (right->type != EXPRESSION_IDENTIFIER) {
+			context->report_error_at_indent("the right side of the '.' operator must be an identifier",
+											token->col);
+		}
+		auto right_expr = static_cast<Expression_Identifier *>(right);
+		auto field = struct_data->get_field(right_expr->value);
+		if (!field) {
+			std::stringstream message;
+			message << "'";
+			message << right_expr->value;
+			message << "' is not a valid field of struct '";
+			message << struct_data->type_name;
+			message << "'";
+			context->report_error_at_indent(message.str(), token->col);
+		}
+		return eval = field->decl->dt;
+	}
+	
+	// hold off on this until '.' has been checked....
+	// we don't want to typecheck the right side of the 
+	// '.' operator under all circumstances
 	auto right_eval = right->typecheck(context);
 
 	if (has_rule(IGNORE_ALL_RULES)) {
@@ -356,80 +408,237 @@ Expression_Binary::typecheck(Parse_Context* context) {
 			message << "' (got type '";
 			message << side_got;
 			message << "')";
-			context->fail_indent = tok->col;
-			context->report_error(message.str());
+			context->report_error_at_indent(message.str(), tok->col);
 		}
 	}
+
+	if (has_rule(ALLOW_POINTER_LEFT_SIDE_INT) && left_eval->is_pointer()) {
+		if (!right_eval->is_int()) {
+			std::stringstream message;
+			message << "when the left operand of operator '";
+			message << to_string();
+			message << "' is a pointer, the right operand must be an integer.  (got type '";
+			message << right_eval->to_string();
+			message << "')";
+			context->report_error_at_indent(message.str(), tok->col);
+		} else {
+			return eval = left_eval;
+		}
+	}
+
+	if (has_rule(ALLOW_POINTER_INT)) {
+		bool left_is_int = left_eval->is_int();
+		bool left_is_ptr = left_eval->is_pointer();	
+		bool right_is_int = right_eval->is_int();
+		bool right_is_ptr = right_eval->is_pointer();	
+		if (left_is_int && right_is_ptr) {
+			return eval = right_eval;
+		} else if (left_is_ptr && right_is_int) {
+			return eval = left_eval;
+		}
+	}
+
+	if (has_rule(DISALLOW_POINTER)) {
+		bool violated_left = left_eval->is_pointer();
+		bool violated_right = left_eval->is_pointer();
+		if (violated_left || violated_right) {
+			std::stringstream message;
+			auto side_name = violated_left ? "left" : "right";
+			auto side_name_not = violated_left ? "right" : "left";
+			auto side_ptr_not = violated_left ? right_eval : left_eval;
+			if (has_rule(ALLOW_POINTER_INT)) {
+				message << side_name;
+				message << " operand of operator '";
+				message << to_string();
+				message << "' can only be a pointer if the ";
+				message << side_name_not;
+				message << " operand is an integer. (";
+				message << side_name_not;
+				message << " operand evalues to type '";
+				message << side_ptr_not->to_string();
+				message << "')";
+			} else {
+				message << side_name;
+				message << " operand of operator '";
+				message << to_string();
+				message << "' cannot be a pointer.";
+			}
+			context->report_error_at_indent(message.str(), tok->col);
+		}
+	}
+
+	if (has_rule(ENFORCE_LEFT_L_VALUE) && !left->is_l_value) {
+		std::stringstream message;
+		message << "the left operand of operator '";
+		message << to_string();
+		message << "' must be an L-value. (it is currently an R-value)";
+		context->report_error_at_indent(message.str(), tok->col);
+	}
+	
+	// for now, any binary operator results in an R-value
+	is_l_value = false;	
+
+	// implicit int->float cast
+	if (left_eval->is_float() && right_eval->is_int()) {
+		return eval = left_eval;
+	}
+	
+	// implicit int->float cast
+	if (right_eval->is_float() && left_eval->is_int()) {
+		return eval = right_eval;
+	}
+
+	if (!left_eval->matches(*right_eval)) {
+		std::stringstream message;
+		message << "type mismatch at operator '";
+		message << to_string();
+		message << "'. (got '";
+		message << left_eval->to_string();
+		message << "' and '";
+		message << right_eval->to_string();
+		message << "')";
+		context->report_error_at_indent(message.str(), tok->col);
+	}
+
+	// left and right are same type, it doesn't
+	// matter which one is returned
+	return eval = left_eval;
+	
 }
 
 Datatype_Information*
 Expression_Unary::typecheck(Parse_Context* context) {
+
+	auto has_rule = [this](Typecheck_Rule rule) -> bool {
+		for (auto r: desc->rules) {
+			if (rule == r) {
+				return true;
+			}
+		}
+		return false;	
+	};
+
 	auto operand_eval = operand->typecheck(context);
+
+	if (has_rule(ENFORCE_L_VALUE) && !operand->is_l_value) {
+		std::stringstream message;
+		message << "operand of operator '";
+		message << to_string();
+		message << "' must be an L-value. (it is currently an R-value)";
+		context->report_error_at_indent(message.str(), tok->col);
+	}
+
+	if (value == ADDRESS_OF) {
+		is_l_value = true;
+	} else {
+		is_l_value = false;
+	}
+
+	return eval = operand_eval;
+
 }
 
 Datatype_Information*
 Expression_Cast::typecheck(Parse_Context* context) {
+	auto op_type = operand->typecheck(context);
+	
+	// no need to check if casting to the same type
+	if (value->matches(*op_type)) {
+		return eval = value;
+	}
 
+	// ensure that it is a valid cast
+	if (value->is_int() || value->is_bool()) {
+		// if we're casting to an int/bool, the only valid operand type
+		// is a float, byte, bool, or pointer... (e.g. structs are not allowed,
+		// as that does not make any sense)
+		if (!op_type->is_float() && !op_type->is_byte() && !op_type->is_bool() && !op_type->is_int() && !op_type->is_pointer()) {
+			std::stringstream message;
+			message << "invalid cast from type '";
+			message << op_type->to_string();
+			message << "' to type '";
+			message << value->to_string();
+			message << "' (only floats, bytes, bools, and pointers can be cast to '";
+			message << value->to_string();
+			message << "')";
+			context->report_error_at_indent(message.str(), token->col);
+		}
+
+	}
+
+	return eval = value;
 }
 
 Datatype_Information*
 Expression_Integer_Literal::typecheck(Parse_Context* context) {
-	return context->type_int;
+	is_l_value = false;
+	return eval = context->type_int;
 }
 
 Datatype_Information*
 Expression_Float_Literal::typecheck(Parse_Context* context) {
-	return context->type_float;
+	is_l_value = false;
+	return eval = context->type_float;
 }
 
 Datatype_Information*
 Expression_String_Literal::typecheck(Parse_Context* context) {
-
+	is_l_value = false;
+	return nullptr;
 }
 
 Datatype_Information*
 Expression_Identifier::typecheck(Parse_Context* context) {
-
+	is_l_value = true;
+	if (value == "true" || value == "false") {
+		return eval = context->type_bool;
+	}
+	if (auto var = context->get_local(value)) {
+		variable = var;
+		return eval = var->dt;	
+	}
+	std::stringstream message;
+	message << "use of undeclared identifier '";
+	message << value;
+	message << "'";
+	context->report_error_at_indent(message.str(), token->col);
+	return nullptr;
 }
 
 Datatype_Information*
 Expression_Datatype::typecheck(Parse_Context* context) {
-	
+	is_l_value = false;	
+	return eval = value;
 }
 
 // PARSE CONTEXT IMPLEMENTATION
 void
 Parse_Context::report_error(const std::string& message) const {
 	int line = 0;
-	int col = 0;
-	std::string* word = nullptr;
 	if (token) {
 		line = token->line;
-		col = token->col;
-		word = &token->word;
+	} else {
+		line = lex_context->raw_file.size();
 	}
 	std::cerr << "\n-------- SPYRE PARSE ERROR -------\n\n";
-	/*
-	std::cerr << "col:     " << col << std::endl;
-	if (word) {
-		std::cerr << "token:   '" << *word << "'" << std::endl;
-	}
-	*/
 	std::cerr << "message: " << message << std::endl << std::endl;
 	std::cerr << "line:    " << line << std::endl;
 	std::cerr << "near:    " << lex_context->raw_file[line - 1] << std::endl;
 	std::cerr << "         ";
-	if (fail_indent > 0) {
+	if (fail_indent > -1) {
 		for (int i = 0; i < fail_indent; i++) {
-			std::cerr << "_";
+			std::cerr << " ";
 		}
-		std::cerr << "^";
-		for (int i = fail_indent + 1; i < lex_context->raw_file[line - 1].length(); i++) {
-			std::cerr << "_";
-		}
+		std::cerr << "^ ";
 	}
 	std::cerr << std::endl << std::endl;
 	std::exit(1);
+}
+
+void
+Parse_Context::report_error_at_indent(const std::string& message, int indent) {
+	fail_indent = indent;
+	report_error(message);
 }
 
 void
@@ -540,7 +749,7 @@ Parse_Context::register_procedure(Procedure_Information* proc) {
 }
 
 Procedure_Information*
-Parse_Context::get_procedure(const std::string& name) {
+Parse_Context::get_procedure(const std::string& name) const {
 	Procedure_Information* found = nullptr;
 	for (Procedure_Information* proc: defined_procedures) {
 		if (proc->type_name == name) {
@@ -554,7 +763,7 @@ Parse_Context::get_procedure(const std::string& name) {
 }
 
 Procedure_Information*
-Parse_Context::get_procedure(const std::string& name, const std::string& signature) {
+Parse_Context::get_procedure(const std::string& name, const std::string& signature) const {
 	Procedure_Information* found = nullptr;
 	for (Procedure_Information* proc: defined_procedures) {
 		// ... signatures must match
@@ -571,6 +780,42 @@ Parse_Context::get_type(const std::string& type_name) const {
 	for (Datatype_Information* dt: defined_types) {
 		if (dt->type_name == type_name) {
 			return dt;
+		}
+	}
+	return nullptr;
+}
+
+Variable_Declaration*
+Parse_Context::get_local(const std::string& identifier) const {
+	Ast_Block* block_check = current_block;
+	while (true) {
+		if (!block_check) {
+			break;
+		}
+		for (auto node: block_check->children) {
+			if (auto check = dynamic_cast<Ast_Declaration *>(node)) {
+				if (check->decl->identifier == identifier) {
+					return check->decl;
+				}
+			}
+		}
+		Ast_Node* scan_up = block_check->parent;
+		while (scan_up) {
+			if (scan_up->type == NODE_BLOCK) {
+				block_check = static_cast<Ast_Block *>(scan_up);
+				break;
+			}
+			scan_up = scan_up->parent;
+		}
+		if (!scan_up) {
+			break;
+		}
+	}
+	if (current_procedure) {
+		for (auto arg: current_procedure->info->args) {
+			if (arg->identifier == identifier) {
+				return arg;
+			}
 		}
 	}
 	return nullptr;
@@ -645,13 +890,15 @@ Parse_Context::handle_struct_declaration() {
 
 void
 Parse_Context::handle_procedure_declaration() {
-	Procedure_Information* info = new Procedure_Information;
+	auto node = new Ast_Procedure;
+	auto info = new Procedure_Information;
+	node->info = info;
 	info->type_name = eat_and_get();
 	eat("::");
 	eat("(");
 	while (true) {
 		if (matches_datatype()) {
-			Variable_Declaration* unnamed = new Variable_Declaration;
+			auto unnamed = new Variable_Declaration;
 			unnamed->dt = parse_datatype();
 			unnamed->has_name = false;
 			info->args.push_back(unnamed);
@@ -671,8 +918,9 @@ Parse_Context::handle_procedure_declaration() {
 
 		// register now so the right line is reported
 		register_procedure(info);
+		current_procedure = node;
 
-		eat("{");
+		//eat("{");
 		info->is_implemented = true;			
 
 		// if a procedure is being implemented, all arguments must
@@ -689,9 +937,25 @@ Parse_Context::handle_procedure_declaration() {
 
 	} else {
 		eat(";");
-		
-		// TODO register the procedure as a local here
 	}
+
+	append_node(node);
+
+}
+
+void
+Parse_Context::handle_variable_declaration() {
+	Token* id_token = token;
+	Ast_Declaration* node = new Ast_Declaration;
+	node->decl = parse_variable_declaration();
+	if (get_local(id_token->word)) {
+		std::stringstream message;
+		message << "redeclaration of variable '";
+		message << id_token->word;
+		message << "'";
+		report_error_at_indent(message.str(), node->decl->identifier_token->col);	
+	}
+	append_node(node);
 }
 
 void
@@ -702,6 +966,94 @@ Parse_Context::handle_standalone_statement() {
 	}
 	mark(";");
 	parse_expression_and_typecheck();
+}
+
+void
+Parse_Context::handle_if() {
+	Ast_If* node = new Ast_If;
+	Token* err_tok = token;
+	eat("if");
+	eat("(", "expected token '(' to follow token 'if'");
+	mark("(", ")");
+	node->condition = parse_expression_and_typecheck();
+	eat(")");
+	if (!node->condition->eval->is_bool()) {
+		std::stringstream message;
+		message << "if-statement condition must evaluate to type 'bool' (got type '";
+		message << node->condition->eval->to_string();
+		message << "')";
+		report_error_at_indent(message.str(), err_tok->col);
+	}
+	append_node(node);
+}
+
+void
+Parse_Context::handle_block() {
+	Ast_Block* block = new Ast_Block;
+	eat("{");
+	current_block = block;
+	append_node(block);
+}
+
+void
+Parse_Context::handle_jump_out() {
+	Token* err_tok = token;
+	eat("}");
+	if (!current_block->parent) {
+		report_error_at_indent("token '}' doesn't close anything", err_tok->col);
+	}
+	Ast_Node* scan_up = current_block;
+	while (scan_up) {
+		scan_up = scan_up->parent;
+		if (scan_up->type == NODE_BLOCK) {
+			current_block = static_cast<Ast_Block *>(scan_up);
+			break;
+		}
+	}
+	if (!scan_up) {
+		assert(false);
+	}
+}
+
+void
+Parse_Context::append_node(Ast_Node* node) {
+
+	static Ast_Node* append_target = nullptr;
+	
+	if (append_target) {
+
+		if (node->type == NODE_DECLARATION) {
+			report_error_at_indent("a declaration can only exist in the global scope or inside of a block",
+			                       static_cast<Ast_Declaration *>(node)->decl->identifier_token->col);
+		}
+
+		switch (append_target->type) {
+			case NODE_IF:
+				static_cast<Ast_If *>(append_target)->child = node;
+				break;
+			case NODE_PROCEDURE_IMPLEMENTATION:
+				static_cast<Ast_Procedure *>(append_target)->child = node;
+				break;
+			default:
+				break;
+		}
+		node->parent = append_target;
+	} else {
+		current_block->children.push_back(node);
+		node->parent = current_block;
+	}
+
+	switch (node->type) {
+		case NODE_IF:
+		case NODE_FOR:
+		case NODE_WHILE:
+		case NODE_PROCEDURE_IMPLEMENTATION:
+			append_target = node;
+			break;
+		default:
+			append_target = nullptr;
+			break;
+	}
 }
 
 void
@@ -775,27 +1127,32 @@ Parse_Context::parse_expression() {
 
 	// expects end of expression to be pointer to by 'marked'
 	while (token_index != marked_index) {
+		std::cout << token->word << std::endl;
 		switch (token->type) {
 			case TOKEN_INTEGER: {
 				auto push = new Expression_Integer_Literal;
 				push->value = token->i;
+				push->token = token;
 				postfix.push_back(push);
 				break;
 			}
 			case TOKEN_FLOAT: {
 				auto push = new Expression_Float_Literal;
+				push->token = token;
 				push->value = token->f;
 				postfix.push_back(push);
 				break;
 			}
 			case TOKEN_STRING: {
 				auto push = new Expression_String_Literal;
+				push->token = token;
 				push->value = token->word;
 				postfix.push_back(push);
 				break;
 			}
 			case TOKEN_IDENTIFIER: {
 				auto push = new Expression_Identifier;
+				push->token = token;
 				push->value = token->word;
 				postfix.push_back(push);
 				break;			
@@ -803,6 +1160,7 @@ Parse_Context::parse_expression() {
 			case TOKEN_OPERATOR: {
 				if (token->word == "(") {
 					auto push = new Expression_Unary;
+					push->token = token;
 					push->value = OPEN_PARENTHESIS;
 					operators.push_back(push);
 				} else if (token->word == ")") {
@@ -825,6 +1183,7 @@ Parse_Context::parse_expression() {
 						report_error("expected datatype to follow cast operator '#'");
 					}
 					auto push = new Expression_Cast;
+					push->token = token;
 					push->value = parse_datatype();
 					push->desc = get_operator_descriptor("__CAST__"); 
 					focus_token(--token_index); // go back one token, end on datatype
@@ -840,11 +1199,13 @@ Parse_Context::parse_expression() {
 					}
 					if (desc->type == OP_BINARY) {
 						auto op = new Expression_Binary();
+						op->token = token;
 						op->value = Expression_Binary::word_to_type(token->word);
 						op->tok = token;
 						push = op;
 					} else if (desc->type == OP_UNARY) {
 						auto op = new Expression_Unary();
+						op->token = token;
 						op->value = Expression_Unary::word_to_type(token->word);
 						op->tok = token;
 						push = op;
@@ -967,11 +1328,8 @@ Parse_Context::parse_datatype() {
 		if (!templ) {
 			report_error("invalid type name '" + token->word + "'");
 		}
-		Datatype_Information* ret = new Datatype_Information(*templ); 
-		ret->ptr_dim = ptr_dim;
-		ret->arr_dim = arr_dim;
 		eat();
-		return ret;
+		return templ; // TODO is this dangerous??????
 	}
 
 	return nullptr;
@@ -982,6 +1340,7 @@ Variable_Declaration*
 Parse_Context::parse_variable_declaration() {
 	
 	Variable_Declaration* decl = new Variable_Declaration;
+	decl->identifier_token = token;
 	decl->identifier = eat_and_get();
 	eat(":");
 	decl->dt = parse_datatype();
@@ -1020,6 +1379,12 @@ Parse_Context::init_types() {
 	t_void->size = 0;
 	type_void = t_void;
 	register_type(t_void);
+
+	Bool_Information* t_bool = new Bool_Information;
+	t_bool->type_name = "bool";
+	t_bool->size = 8;
+	type_bool = t_bool;
+	register_type(t_bool);
 }
 
 Parse_Context*
@@ -1030,19 +1395,27 @@ Parser::generate_tree(Lex_Context* lex_context) {
 	parser->token = &lex_context->tokens->front();
 	parser->token_index = 0;
 	parser->init_types();
-	
+	parser->root_node = new Ast_Block;
+	parser->focus = parser->root_node;
+	parser->current_block = parser->root_node;
+
 	while (parser->token) {
 		if (parser->matches_struct_declaration()) {
 			parser->handle_struct_declaration();
 		} else if (parser->matches_procedure_declaration()) {
 			parser->handle_procedure_declaration();
+		} else if (parser->matches_variable_declaration()) {
+			parser->handle_variable_declaration();
+		} else if (parser->on("if")) {
+			parser->handle_if();
+		} else if (parser->on("{")) {
+			parser->handle_block();
+		} else if (parser->on("}")) {
+			parser->handle_jump_out();
 		} else {
 			parser->handle_standalone_statement();
 		}
 	}
-
-	Datatype_Information* dt = new Struct_Information;
-	dt->clone();
 
 	return parser;
 

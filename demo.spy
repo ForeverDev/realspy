@@ -1,1 +1,16 @@
-20 << 30 + (12 >> 16.2);
+Some_Struct :: struct {
+	field: int;
+};
+
+Another_Struct :: struct {
+	field: Some_Struct;
+};
+
+main :: (x: int, z: float) -> void {
+	
+	a: Another_Struct;
+	b: int;
+	
+	b = a.field.meme;
+
+}

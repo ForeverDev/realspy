@@ -18,7 +18,7 @@ Lex_Context::get() {
 	if (at == '\n') {
 		col = 1;
 	} else if (at == '\t') {
-		col += 4;
+		col += 8;
 	} else {
 		col++;
 	}
@@ -118,6 +118,9 @@ Lex_Context::handle_number() {
 		is_float = true;
 		buf << '.';
 		get();
+	}
+	if (!std::isdigit(peek())) {
+		report_error("expected digit to follow token '.'");
 	}
 	while (std::isdigit(peek())) {
 		buf << static_cast<char>(get());
@@ -226,7 +229,7 @@ Lexer::generate_tokens(const std::string& filename) {
 	while ((state->on = state->peek()) != EOF) {
 		if (state->on == '\n') {
 			state->raw_file.push_back(line_make.str());
-			line_make.clear();
+			line_make.str(std::string());
 		} else {
 			line_make << static_cast<char>(state->on);
 		}

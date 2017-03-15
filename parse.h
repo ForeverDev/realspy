@@ -10,6 +10,7 @@ using namespace Lexer;
 namespace Parser {
 	
 	// forward declarations
+	struct Variable_Declaration;
 	struct Datatype_Information;
 	struct Struct_Information;
 	class  Parse_Context;
@@ -25,24 +26,30 @@ namespace Parser {
 	};
 	
 	// default rules:
-	//   1. types must match exactly
-	//   2. all datatypes are acceptable	
-	//   3. byte->int always allowed
-	//   4. int->byte always allowed
-	//   5. int->float always allowed
-	//   6. float->int always allowed
+	//   1. types must match exactly unless one of the following is true
+	//   2. byte->int always allowed
+	//   3. int->byte always allowed
+	//   4. int->float always allowed
+	//   5. float->int always allowed
 	enum Typecheck_Rule {
+		// both unary and binary
 		IGNORE_ALL_RULES,
 		ALLOW_IMPLICIT_POINTER_CAST,
 		ALLOW_POINTER_INT,
 		DISALLOW_FLOAT,
 		DISALLOW_POINTER,
 		DISALLOW_NON_POINTER,
-		DISALLOW_LITERAL,
 		ENFORCE_INTEGER,
 		ENFORCE_FLOAT,
 		ENFORCE_BOOL,
-		ENFORCE_DATATYPE
+		ENFORCE_DATATYPE,
+
+		// binary only
+		ALLOW_POINTER_LEFT_SIDE_INT,
+		ENFORCE_LEFT_L_VALUE,
+
+		// unary only
+		ENFORCE_L_VALUE
 	};
 
 	struct Operator_Descriptor {
@@ -110,6 +117,15 @@ namespace Parser {
 		EXPRESSION_CAST
 	};
 
+	enum Ast_Node_Type {
+		NODE_IF,
+		NODE_WHILE,
+		NODE_FOR,
+		NODE_BLOCK,
+		NODE_PROCEDURE_IMPLEMENTATION,
+		NODE_DECLARATION
+	};
+
 	struct Expression {
 		enum Leaf {
 			LEAF_LEFT,
@@ -124,6 +140,7 @@ namespace Parser {
 		bool is_binary_type(Binary_Operator_Type type) const;
 		bool is_unary_type(Unary_Operator_Type type) const;
 		
+		Token* token = nullptr;	
 		Expression_Type type;
 		Datatype_Information* eval;
 		std::string word;	
@@ -131,6 +148,7 @@ namespace Parser {
 		Leaf side; // only applicable if parent is binary operator
 		int line;
 		int col;
+		bool is_l_value = true; // if false, is_r_value == true
 	};
 
 	struct Expression_Operator : public Expression {
@@ -212,7 +230,10 @@ namespace Parser {
 		Expression_Identifier(): Expression(EXPRESSION_IDENTIFIER) { }
 		virtual std::string to_string() const override;
 		virtual Datatype_Information* typecheck(Parse_Context *) override;
-
+		
+		// variable is only applicable if the identifier
+		// typechecks to a local... otherwise it is null
+		Variable_Declaration* variable = nullptr;
 		std::string value;
 	};
 
@@ -233,6 +254,7 @@ namespace Parser {
 		bool has_name = true; // only used for procedure arguments	
 		std::string identifier;
 		Datatype_Information* dt;
+		Token* identifier_token = nullptr;
 	};
 
 	struct Datatype_Information {
@@ -247,6 +269,8 @@ namespace Parser {
 		bool is_float() const { return type_name == "float" && !is_pointer() && !is_array(); }
 		bool is_byte() const { return type_name == "byte" && !is_pointer() && !is_array(); }
 		bool is_bool() const { return type_name == "bool" && !is_pointer() && !is_array(); }
+		bool matches_strict(const Datatype_Information&) const;
+		bool matches(const Datatype_Information&) const;
 
 		std::string type_name;
 		int ptr_dim = 0;
@@ -265,6 +289,14 @@ namespace Parser {
 	struct Struct_Information : public Datatype_Information {
 		Struct_Information(const Struct_Information&);
 		Struct_Information() {}
+		Struct_Field* get_field(const std::string& id) {
+			for (auto field: fields) {
+				if (field->decl->identifier == id) {
+					return field;
+				}
+			}
+			return nullptr;
+		}
 
 		bool is_complete = false;
 		std::vector<Struct_Field *> fields;
@@ -297,11 +329,50 @@ namespace Parser {
 		Void_Information() {}
 	};
 
+	struct Bool_Information : public Datatype_Information {
+		Bool_Information(const Bool_Information&);
+		Bool_Information() {}
+	};
+
+	struct Ast_Node {
+		Ast_Node(Ast_Node_Type t): type(t) {}
+		virtual ~Ast_Node() {}
+
+		Ast_Node_Type type;
+		Ast_Node* parent = nullptr;
+	};
+
+	struct Ast_Block : public Ast_Node {
+		Ast_Block(): Ast_Node(NODE_BLOCK) {}
+	
+		std::vector<Ast_Node *> children;
+	};
+
+	struct Ast_Procedure : public Ast_Node {
+		Ast_Procedure(): Ast_Node(NODE_PROCEDURE_IMPLEMENTATION) {}
+		
+		Procedure_Information* info;
+		Ast_Node* child = nullptr;	
+	};
+
+	struct Ast_If : public Ast_Node {
+		Ast_If(): Ast_Node(NODE_IF) {}
+
+		Expression* condition;
+		Ast_Node* child = nullptr;
+	};
+
+	struct Ast_Declaration : public Ast_Node {
+		Ast_Declaration(): Ast_Node(NODE_DECLARATION) {}
+
+		Variable_Declaration* decl = nullptr;
+	};
+
 	class Parse_Context {
 		private:
 			int token_index;
 			int marked_index;
-			int fail_indent = 0;
+			int fail_indent = -1;
 			Token* token;	
 			Lex_Context* lex_context;	
 			std::vector<Datatype_Information *> defined_types;
@@ -309,12 +380,18 @@ namespace Parser {
 			Integer_Information* type_int;
 			Void_Information* type_void;
 			Float_Information* type_float;
+			Bool_Information* type_bool;
+			Ast_Node* focus;
+			Ast_Block* root_node;
+			Ast_Block* current_block;
+			Ast_Procedure* current_procedure = nullptr;
 			
 			void report_error(const std::string&) const;	
+			void report_error_at_indent(const std::string&, int);
 
 			void assert_token() const;			
-			void focus_token(int index);
-			Token* get_token(int index);
+			void focus_token(int);
+			Token* get_token(int);
 
 			void eat(const std::string&, const std::string&);
 			void eat(const std::string&);
@@ -334,7 +411,12 @@ namespace Parser {
 
 			void handle_struct_declaration();
 			void handle_procedure_declaration();
+			void handle_variable_declaration();
 			void handle_standalone_statement();
+			void handle_if();
+			void handle_block();
+			void handle_jump_out();
+			void append_node(Ast_Node*);
 
 			Variable_Declaration* parse_variable_declaration();
 			Struct_Field* parse_struct_field(Struct_Information*);
@@ -348,9 +430,10 @@ namespace Parser {
 			void register_type(Datatype_Information*);
 			void register_procedure(Procedure_Information*);
 
-			Procedure_Information* get_procedure(const std::string&);
-			Procedure_Information* get_procedure(const std::string&, const std::string&);
+			Procedure_Information* get_procedure(const std::string&) const;
+			Procedure_Information* get_procedure(const std::string&, const std::string&) const;
 			Datatype_Information* get_type(const std::string&) const;
+			Variable_Declaration* get_local(const std::string&) const;
 
 		public:
 
