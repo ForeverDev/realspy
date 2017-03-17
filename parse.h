@@ -123,7 +123,8 @@ namespace Parser {
 		NODE_FOR,
 		NODE_BLOCK,
 		NODE_PROCEDURE_IMPLEMENTATION,
-		NODE_DECLARATION
+		NODE_DECLARATION,
+		NODE_STATEMENT
 	};
 
 	struct Expression {
@@ -262,7 +263,7 @@ namespace Parser {
 		Datatype_Information() {}
 		Datatype_Information(const Datatype_Information&);
 		Datatype_Information* clone() const;
-		std::string to_string() const;
+		virtual std::string to_string() const;
 		bool is_pointer() const { return ptr_dim > 0; }
 		bool is_array() const { return arr_dim > 0; }
 		bool is_int() const { return type_name == "int" && !is_pointer() && !is_array(); }
@@ -270,7 +271,7 @@ namespace Parser {
 		bool is_byte() const { return type_name == "byte" && !is_pointer() && !is_array(); }
 		bool is_bool() const { return type_name == "bool" && !is_pointer() && !is_array(); }
 		bool matches_strict(const Datatype_Information&) const;
-		bool matches(const Datatype_Information&) const;
+		virtual bool matches(const Datatype_Information&) const;
 
 		std::string type_name;
 		int ptr_dim = 0;
@@ -305,11 +306,13 @@ namespace Parser {
 	struct Procedure_Information : public Datatype_Information {
 		Procedure_Information(const Procedure_Information&);
 		Procedure_Information() {}
-		std::string to_string() const;
+		virtual std::string to_string() const override;
+		virtual bool matches(const Datatype_Information&) const override;
 		std::string get_signature() const;
 		static std::string make_signature(const std::vector<Variable_Declaration *>&);
 		
 		bool is_implemented = false;
+		bool determined = false;
 		std::vector<Variable_Declaration *> args;
 		Datatype_Information* ret;
 	};
@@ -337,26 +340,46 @@ namespace Parser {
 	struct Ast_Node {
 		Ast_Node(Ast_Node_Type t): type(t) {}
 		virtual ~Ast_Node() {}
+		virtual void print(int) const = 0;
 
 		Ast_Node_Type type;
 		Ast_Node* parent = nullptr;
 	};
 
+	struct Ast_Statement : public Ast_Node {
+		Ast_Statement(): Ast_Node(NODE_STATEMENT) {}
+		virtual void print(int) const override;
+
+		Expression* expression;
+	};
+
 	struct Ast_Block : public Ast_Node {
 		Ast_Block(): Ast_Node(NODE_BLOCK) {}
+		virtual void print(int) const override;
 	
 		std::vector<Ast_Node *> children;
 	};
 
 	struct Ast_Procedure : public Ast_Node {
 		Ast_Procedure(): Ast_Node(NODE_PROCEDURE_IMPLEMENTATION) {}
+		virtual void print(int) const override;
 		
+		int declared_line;	
 		Procedure_Information* info;
 		Ast_Node* child = nullptr;	
 	};
 
 	struct Ast_If : public Ast_Node {
 		Ast_If(): Ast_Node(NODE_IF) {}
+		virtual void print(int) const override;
+
+		Expression* condition;
+		Ast_Node* child = nullptr;
+	};
+
+	struct Ast_While : public Ast_Node {
+		Ast_While(): Ast_Node(NODE_WHILE) {}
+		virtual void print(int) const override;
 
 		Expression* condition;
 		Ast_Node* child = nullptr;
@@ -364,6 +387,7 @@ namespace Parser {
 
 	struct Ast_Declaration : public Ast_Node {
 		Ast_Declaration(): Ast_Node(NODE_DECLARATION) {}
+		virtual void print(int) const override;
 
 		Variable_Declaration* decl = nullptr;
 	};
@@ -376,7 +400,7 @@ namespace Parser {
 			Token* token;	
 			Lex_Context* lex_context;	
 			std::vector<Datatype_Information *> defined_types;
-			std::vector<Procedure_Information *> defined_procedures;
+			std::vector<Ast_Procedure *> defined_procedures;
 			Integer_Information* type_int;
 			Void_Information* type_void;
 			Float_Information* type_float;
@@ -402,18 +426,21 @@ namespace Parser {
 			bool is_identifier() const;
 			bool is_operator() const;
 
+			void init_types();
+
 			bool matches_datatype() const;
 			bool matches_struct_declaration() const;
 			bool matches_variable_declaration() const;
 			bool matches_procedure_declaration() const;
-
-			void init_types();
+			bool matches_inferred_variable_declaration() const;
 
 			void handle_struct_declaration();
 			void handle_procedure_declaration();
 			void handle_variable_declaration();
+			void handle_inferred_variable_declaration();
 			void handle_standalone_statement();
 			void handle_if();
+			void handle_while();
 			void handle_block();
 			void handle_jump_out();
 			void append_node(Ast_Node*);
@@ -421,17 +448,18 @@ namespace Parser {
 			Variable_Declaration* parse_variable_declaration();
 			Struct_Field* parse_struct_field(Struct_Information*);
 			Datatype_Information* parse_datatype();
+			Procedure_Information* parse_procedure_descriptor();
 			Expression* parse_expression();
 			Expression* parse_expression_and_typecheck();
 
 			void mark(const std::string&, const std::string&);
 			void mark(const std::string&);
 
-			void register_type(Datatype_Information*);
-			void register_procedure(Procedure_Information*);
+			void register_type(Datatype_Information *);
+			void register_procedure(Ast_Procedure* );
 
-			Procedure_Information* get_procedure(const std::string&) const;
-			Procedure_Information* get_procedure(const std::string&, const std::string&) const;
+			Ast_Procedure* get_procedure(const std::string&, const std::string&) const;
+			std::vector<Ast_Procedure *> get_all_procedures(const std::string&) const;
 			Datatype_Information* get_type(const std::string&) const;
 			Variable_Declaration* get_local(const std::string&) const;
 

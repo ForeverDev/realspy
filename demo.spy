@@ -1,16 +1,13 @@
-Some_Struct :: struct {
-	field: int;
-};
+proc :: (argument: int) -> void {
 
-Another_Struct :: struct {
-	field: Some_Struct;
-};
+}
+
+proc :: (argument: int, another_argument: float) -> void {
+
+}
 
 main :: (x: int, z: float) -> void {
 	
-	a: Another_Struct;
-	b: int;
+	meme := proc;	
 	
-	b = a.field.meme;
-
 }

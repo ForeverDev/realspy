@@ -1,5 +1,7 @@
 #include <sstream>
 #include <iostream>
+#include <algorithm>
+#include <iomanip>
 #include "assert.h"
 #include "parse.h"
 
@@ -127,11 +129,10 @@ Datatype_Information::to_string() const {
 std::string
 Procedure_Information::to_string() const {
 	std::ostringstream buf;
-	buf << Datatype_Information::to_string();
-	buf << ": (";
+	buf << "(";
 	size_t nargs = args.size();
 	for (int i = 0; i < nargs; i++) {
-		buf << args[i]->to_string();
+		buf << args[i]->dt->to_string();
 		if (i < nargs - 1) {
 			buf << ", ";
 		}
@@ -170,6 +171,26 @@ Procedure_Information::make_signature(const std::vector<Variable_Declaration *>&
 std::string
 Procedure_Information::get_signature() const {
 	return Procedure_Information::make_signature(args);
+}
+
+bool
+Procedure_Information::matches(const Datatype_Information& other) const {
+	const auto proc_other = dynamic_cast<const Procedure_Information *>(&other);
+	if (!proc_other) {
+		return false;
+	}
+	if (args.size() != proc_other->args.size()) {
+		return false;
+	}
+	for (int i = 0; i < args.size(); i++) {
+		if (!args[i]->dt->matches(*proc_other->args[i]->dt)) {
+			return false;
+		}
+	}
+	if (!ret->matches(*proc_other->ret)) {
+		return false;
+	}
+	return true;
 }
 
 Integer_Information::Integer_Information(const Integer_Information& to_copy): Datatype_Information(to_copy) {
@@ -298,11 +319,18 @@ Expression_Cast::to_string() const {
 }
 
 // ... print methods ...
+
+// helper function
 void
-Expression::print(int indent = 0) const {
+make_indent(int indent = 0) {
 	for (int i = 0; i < indent; i++) {
 		std::cout << "  ";
 	}
+}
+
+void
+Expression::print(int indent = 0) const {
+	make_indent(indent);
 	std::cout << to_string() << std::endl;	
 }
 
@@ -500,6 +528,13 @@ Expression_Binary::typecheck(Parse_Context* context) {
 		context->report_error_at_indent(message.str(), tok->col);
 	}
 
+	// comparison operators always result in bool
+	if (value == COMPARE || value == COMPARE_NOT
+		|| value == LESS_THAN || value == LESS_THAN_EQUAL
+		|| value == GREATER_THAN || value == GREATER_THAN_EQUAL) {
+		return eval = context->type_bool;	
+	}
+
 	// left and right are same type, it doesn't
 	// matter which one is returned
 	return eval = left_eval;
@@ -519,6 +554,18 @@ Expression_Unary::typecheck(Parse_Context* context) {
 	};
 
 	auto operand_eval = operand->typecheck(context);
+
+	if (auto proc = dynamic_cast<Procedure_Information *>(operand_eval)) {
+		if (!proc->is_pointer()) {
+			std::stringstream message;
+			message << "operand of operator '";
+			message << to_string();
+			message << "' is an invalid type (got '";
+			message << proc->to_string();
+			message << "'";
+			context->report_error_at_indent(message.str(), operand->token->col);
+		}
+	}
 
 	if (has_rule(ENFORCE_L_VALUE) && !operand->is_l_value) {
 		std::stringstream message;
@@ -541,6 +588,10 @@ Expression_Unary::typecheck(Parse_Context* context) {
 Datatype_Information*
 Expression_Cast::typecheck(Parse_Context* context) {
 	auto op_type = operand->typecheck(context);
+
+	if (dynamic_cast<Procedure_Information *>(op_type) || dynamic_cast<Procedure_Information *>(value)) {
+		context->report_error_at_indent("it is illegal to cast to or from a procedure pointer", token->col);
+	}
 	
 	// no need to check if casting to the same type
 	if (value->matches(*op_type)) {
@@ -597,6 +648,93 @@ Expression_Identifier::typecheck(Parse_Context* context) {
 		variable = var;
 		return eval = var->dt;	
 	}
+	auto all_procs = context->get_all_procedures(value);
+	if (all_procs.size() == 1) {
+		return eval = all_procs[0]->info;
+	} else if (all_procs.size() > 1) {
+		
+		Procedure_Information* proc_context = nullptr;
+
+		auto append_candidates = [&](std::stringstream& stream) -> void {
+
+			int biggest_line = 0;
+			int line_count;
+			std::for_each(all_procs.begin(), all_procs.end(), [&biggest_line](auto at_proc) {
+				if (at_proc->declared_line > biggest_line) {
+					biggest_line = at_proc->declared_line;
+				}
+			});
+			line_count = std::to_string(biggest_line).length();
+
+			for (auto proc: all_procs) {
+				stream << "\tline #" << std::setw(line_count) << std::setfill('0') << proc->declared_line;
+				stream << ": " << proc->info->to_string() << std::endl;
+			}
+		};
+
+		auto not_enough_context = [&]() -> void {
+			std::stringstream message;
+			message << "there is not enough context to determine what '";
+			message << value;
+			message << "' refers to.\npossible candidates:\n";
+			append_candidates(message);
+			context->report_error_at_indent(message.str(), token->col);
+		};
+
+		auto no_matching_overload = [&](Procedure_Information* got) -> void {
+			std::stringstream message;
+			message << "no matching overload found for procedure '";
+			message << value;
+			message << "'\n";
+			message << "inferred type:\n\t";
+			message << got->to_string();
+			message << "\npossible candidates:\n";
+			append_candidates(message);
+			context->report_error_at_indent(message.str(), token->col);
+		};
+		
+		// if reached here there is more than one possible
+		// procedure... therefore some context is needed to
+		// determine which one should be picked.
+		if (!parent) {
+			not_enough_context();
+		}
+
+		switch (parent->type) {
+			case EXPRESSION_OPERATOR_BINARY: {
+				auto bin = static_cast<Expression_Binary *>(parent);
+				std::cout << "MEMEME\n";
+				if (bin->value == ASSIGN) {
+					switch (side) {
+						case LEAF_LEFT:
+							proc_context = dynamic_cast<Procedure_Information *>(bin->right->typecheck(context));	
+							break;
+						case LEAF_RIGHT:
+							proc_context = dynamic_cast<Procedure_Information *>(bin->left->typecheck(context));	
+							break;	
+					}
+				}
+				break;
+			}
+			default:
+				break;
+		}
+
+		if (!proc_context) {
+			not_enough_context();
+		}
+
+		// now proc_context holds the type that we should
+		// be referring to.....	
+		auto inferred_descriptor = context->get_procedure(value, proc_context->get_signature());
+
+		if (!inferred_descriptor) {
+			no_matching_overload(proc_context);
+		}
+
+		return eval = inferred_descriptor->info;
+
+	}
 	std::stringstream message;
 	message << "use of undeclared identifier '";
 	message << value;
@@ -611,6 +749,113 @@ Expression_Datatype::typecheck(Parse_Context* context) {
 	return eval = value;
 }
 
+// AST NODE IMPLEMENTATION
+
+void
+Ast_Statement::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "STATEMENT: [\n";
+	make_indent(indent + 1);
+	std::cout << "EXPRESSION: [\n";
+	expression->print(indent + 2);
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+void
+Ast_Block::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "BLOCK: [\n";
+	for (auto child: children) {
+		child->print(indent + 1);
+	}
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+void
+Ast_Procedure::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "PROCEDURE: [\n";
+	make_indent(indent + 1);
+	std::cout << "NAME: " << info->type_name << std::endl;
+	make_indent(indent + 1);
+	std::cout << "RETURN TYPE: " << info->ret->to_string() << std::endl;
+	make_indent(indent + 1);
+	std::cout << "SIGNATURE: " << info->get_signature() << std::endl;
+	make_indent(indent + 1);
+	std::cout << "ARGS: [\n";
+	for (auto arg: info->args) {
+		make_indent(indent + 2);
+		std::cout << arg->to_string() << std::endl; 
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "CHILD: [\n";
+	if (child) {
+		child->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+void
+Ast_If::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "IF: [\n";
+	make_indent(indent + 1);
+	std::cout << "CONDITION: [\n";
+	condition->print(indent + 2);
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "CHILD: [\n";
+	if (child) {
+		child->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+void
+Ast_While::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "WHILE: [\n";
+	make_indent(indent + 1);
+	std::cout << "CONDITION: [\n";
+	condition->print(indent + 2);
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "CHILD: [\n";
+	if (child) {
+		child->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+void
+Ast_Declaration::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "DECLARATION: [\n";
+	make_indent(indent + 1);
+	std::cout << "IDENTIFIER: " << decl->identifier << std::endl;
+	make_indent(indent + 1);
+	std::cout << "DATATYPE:   " << decl->dt->to_string() << std::endl;
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+
 // PARSE CONTEXT IMPLEMENTATION
 void
 Parse_Context::report_error(const std::string& message) const {
@@ -621,15 +866,26 @@ Parse_Context::report_error(const std::string& message) const {
 		line = lex_context->raw_file.size();
 	}
 	std::cerr << "\n-------- SPYRE PARSE ERROR -------\n\n";
-	std::cerr << "message: " << message << std::endl << std::endl;
+	std::cerr << "message: ";
+	for (char c: message) {
+		if (c == '\n') {
+			std::cout << "\n         ";
+		} else {
+			std::cout << c;
+		}
+	}
+	std::cout << std::endl;
 	std::cerr << "line:    " << line << std::endl;
 	std::cerr << "near:    " << lex_context->raw_file[line - 1] << std::endl;
 	std::cerr << "         ";
 	if (fail_indent > -1) {
 		for (int i = 0; i < fail_indent; i++) {
-			std::cerr << " ";
+			std::cerr << "_";
 		}
-		std::cerr << "^ ";
+		std::cerr << "^";
+		for (int i = fail_indent + 1; i < lex_context->raw_file[line - 1].length() - 1; i++) {
+			std::cerr << "_";
+		}
 	}
 	std::cerr << std::endl << std::endl;
 	std::exit(1);
@@ -741,35 +997,37 @@ Parse_Context::register_type(Datatype_Information* dt) {
 }
 
 void
-Parse_Context::register_procedure(Procedure_Information* proc) {	
-	if (get_procedure(proc->type_name, proc->get_signature())) {
-		report_error("a procedure with that signature already exists");
+Parse_Context::register_procedure(Ast_Procedure* proc) {
+	auto info = proc->info;
+	if (get_procedure(info->type_name, info->get_signature())) {
+		std::stringstream message;
+		message << "reimplementation of procedure '";
+		message << info->type_name;
+		message << "' - a infoedure with that name and signature already exists.";
+		report_error(message.str());
 	}
 	defined_procedures.push_back(proc);
 }
 
-Procedure_Information*
-Parse_Context::get_procedure(const std::string& name) const {
-	Procedure_Information* found = nullptr;
-	for (Procedure_Information* proc: defined_procedures) {
-		if (proc->type_name == name) {
-			if (found) {
-				report_error("can't decide procedure...");
-			}
+Ast_Procedure*
+Parse_Context::get_procedure(const std::string& name, const std::string& signature) const {
+	Ast_Procedure* found = nullptr;
+	for (auto proc: defined_procedures) {
+		// ... signatures must match
+		if (proc->info->type_name == name && proc->info->get_signature() == signature) {
 			found = proc;
+			break;
 		}
 	}
 	return found;
 }
 
-Procedure_Information*
-Parse_Context::get_procedure(const std::string& name, const std::string& signature) const {
-	Procedure_Information* found = nullptr;
-	for (Procedure_Information* proc: defined_procedures) {
-		// ... signatures must match
-		if (proc->type_name == name && proc->get_signature() == signature) {
-			found = proc;
-			break;
+std::vector<Ast_Procedure *>
+Parse_Context::get_all_procedures(const std::string& name) const {
+	std::vector<Ast_Procedure *> found;
+	for (auto proc: defined_procedures) {
+		if (proc->info->type_name == name) {
+			found.push_back(proc);
 		}
 	}
 	return found;
@@ -818,6 +1076,7 @@ Parse_Context::get_local(const std::string& identifier) const {
 			}
 		}
 	}
+	
 	return nullptr;
 }
 
@@ -833,12 +1092,17 @@ Parse_Context::matches_procedure_declaration() const {
 
 bool
 Parse_Context::matches_datatype() const {
-	return on("^") || on("[") || get_type(token->word);
+	return on("^") || on("[") || on("(") || get_type(token->word);
 }
 
 bool
 Parse_Context::matches_variable_declaration() const {
 	return is_identifier() && on(1, ":");	
+}
+
+bool
+Parse_Context::matches_inferred_variable_declaration() const {
+	return is_identifier() && on(1, ":=");
 }
 
 void
@@ -891,33 +1155,16 @@ Parse_Context::handle_struct_declaration() {
 void
 Parse_Context::handle_procedure_declaration() {
 	auto node = new Ast_Procedure;
-	auto info = new Procedure_Information;
-	node->info = info;
-	info->type_name = eat_and_get();
+	node->declared_line = token->line;
+	auto type_name = eat_and_get();
 	eat("::");
-	eat("(");
-	while (true) {
-		if (matches_datatype()) {
-			auto unnamed = new Variable_Declaration;
-			unnamed->dt = parse_datatype();
-			unnamed->has_name = false;
-			info->args.push_back(unnamed);
-		} else if (matches_variable_declaration()) {
-			info->args.push_back(parse_variable_declaration());
-		} else {
-			break;
-		}
-		if (on(",")) {
-			eat(",");
-		}
-	}	
-	eat(")", "expected token ')' to close procedure argument list");
-	eat("->", "expected token '->' following procedure declaration to specify return type");
-	info->ret = parse_datatype();
+	auto info = parse_procedure_descriptor();
+	info->type_name = type_name;
+	node->info = info;
 	if (on("{")) {
 
 		// register now so the right line is reported
-		register_procedure(info);
+		register_procedure(node);
 		current_procedure = node;
 
 		//eat("{");
@@ -945,17 +1192,70 @@ Parse_Context::handle_procedure_declaration() {
 
 void
 Parse_Context::handle_variable_declaration() {
-	Token* id_token = token;
-	Ast_Declaration* node = new Ast_Declaration;
+	auto id_token = token;
+	auto node = new Ast_Declaration;
 	node->decl = parse_variable_declaration();
-	if (get_local(id_token->word)) {
+	append_node(node);
+}
+
+void
+Parse_Context::handle_inferred_variable_declaration() {
+	auto id_token = token;
+	auto node = new Ast_Declaration;
+	auto decl = new Variable_Declaration;
+	const auto& identifier = token->word;
+
+	eat();
+	eat(":=");
+	mark(";");
+	
+	// we need to check here ahead of time so the
+	// typechecker doesn't throw some weird errors
+	if (get_local(identifier)) {
 		std::stringstream message;
 		message << "redeclaration of variable '";
-		message << id_token->word;
-		message << "'";
-		report_error_at_indent(message.str(), node->decl->identifier_token->col);	
+		message << identifier;
+		message << "' (perhaps you meant to use '=' instead of ':=')";
+		report_error_at_indent(message.str(), id_token->col);
 	}
-	append_node(node);
+
+	// patch together an assignment expression 
+	auto rhs = parse_expression_and_typecheck();
+	auto lhs = new Expression_Identifier;
+	auto assign = new Expression_Binary;
+	assign->value = ASSIGN;
+	lhs->parent = assign;
+	lhs->value = identifier;
+	rhs->parent = assign;
+	assign->left = lhs;
+	assign->right = rhs;
+	assign->desc = &operator_table[1]; // '=' operator descriptor
+	assign->token = nullptr; // this is kinda nasty but the typecheck will never throw
+							 // an error because the assignment is always safe
+
+	// !!! note we don't typecheck the assignment yet because
+	// the declaration node hasn't yet been created
+	
+	// now that we have the expression, create a declaration
+	// and append it.... the datatype is rhs->eval (however,
+	// assign->eval would work as well)
+	auto decl_node = new Ast_Declaration;
+	decl_node->decl = new Variable_Declaration;
+	decl_node->decl->identifier = identifier;
+	decl_node->decl->identifier_token = id_token;
+	append_node(decl_node);
+
+	// made the declaration node, we are free to typecheck
+	auto inference = rhs->typecheck(this);
+	decl_node->decl->dt = rhs->eval;
+	lhs->eval = inference;
+	assign->eval = inference;
+
+	// now create a statement node and append that
+	auto statement = new Ast_Statement;
+	statement->expression = assign;
+	append_node(statement);
+	
 }
 
 void
@@ -965,21 +1265,43 @@ Parse_Context::handle_standalone_statement() {
 		return;
 	}
 	mark(";");
-	parse_expression_and_typecheck();
+	
+	auto statement = new Ast_Statement;
+	statement->expression = parse_expression_and_typecheck();
+	append_node(statement);
 }
 
 void
 Parse_Context::handle_if() {
-	Ast_If* node = new Ast_If;
+	auto node = new Ast_If;
 	Token* err_tok = token;
 	eat("if");
 	eat("(", "expected token '(' to follow token 'if'");
 	mark("(", ")");
 	node->condition = parse_expression_and_typecheck();
 	eat(")");
-	if (!node->condition->eval->is_bool()) {
+	if (!node->condition->eval->matches(*type_bool)) {
 		std::stringstream message;
 		message << "if-statement condition must evaluate to type 'bool' (got type '";
+		message << node->condition->eval->to_string();
+		message << "')";
+		report_error_at_indent(message.str(), err_tok->col);
+	}
+	append_node(node);
+}
+
+void
+Parse_Context::handle_while() {
+	auto node = new Ast_While;
+	Token* err_tok = token;
+	eat("while");
+	eat("(", "expected token '(' to follow token 'if'");
+	mark("(", ")");
+	node->condition = parse_expression_and_typecheck();
+	eat(")");
+	if (!node->condition->eval->matches(*type_bool)) {
+		std::stringstream message;
+		message << "while-loop condition must evaluate to type 'bool' (got type '";
 		message << node->condition->eval->to_string();
 		message << "')";
 		report_error_at_indent(message.str(), err_tok->col);
@@ -1019,6 +1341,17 @@ void
 Parse_Context::append_node(Ast_Node* node) {
 
 	static Ast_Node* append_target = nullptr;
+
+	if (node->type == NODE_DECLARATION) {
+		auto decl = static_cast<Ast_Declaration *>(node)->decl;
+		if (get_local(decl->identifier)) {
+			std::stringstream message;
+			message << "redeclaration of variable '";
+			message << decl->identifier;
+			message << "'";
+			report_error(message.str()); 
+		}
+	}
 	
 	if (append_target) {
 
@@ -1127,7 +1460,6 @@ Parse_Context::parse_expression() {
 
 	// expects end of expression to be pointer to by 'marked'
 	while (token_index != marked_index) {
-		std::cout << token->word << std::endl;
 		switch (token->type) {
 			case TOKEN_INTEGER: {
 				auto push = new Expression_Integer_Literal;
@@ -1300,6 +1632,35 @@ Parse_Context::parse_expression_and_typecheck() {
 	return exp;
 }
 
+Procedure_Information*
+Parse_Context::parse_procedure_descriptor() {
+	// expects to be on the '(' token
+	auto info = new Procedure_Information;	
+	
+	eat("(");
+
+	while (true) {
+		if (matches_datatype()) {
+			auto unnamed = new Variable_Declaration;
+			unnamed->dt = parse_datatype();
+			unnamed->has_name = false;
+			info->args.push_back(unnamed);
+		} else if (matches_variable_declaration()) {
+			info->args.push_back(parse_variable_declaration());
+		} else {
+			break;
+		}
+		if (on(",")) {
+			eat(",");
+		}
+	}	
+	eat(")", "expected token ')' to close procedure argument list");
+	eat("->", "expected token '->' following procedure declaration to specify return type");
+	info->ret = parse_datatype();
+
+	return info;	
+}
+
 Datatype_Information*
 Parse_Context::parse_datatype() {
 
@@ -1322,6 +1683,9 @@ Parse_Context::parse_datatype() {
 	if (on("(")) {
 		
 		// TODO implement non-declarative parse?
+		auto proc = parse_procedure_descriptor();
+		proc->type_name = "__function_pointer__";
+		return proc;
 
 	} else {	
 		templ = get_type(token->word);
@@ -1385,6 +1749,7 @@ Parse_Context::init_types() {
 	t_bool->size = 8;
 	type_bool = t_bool;
 	register_type(t_bool);
+
 }
 
 Parse_Context*
@@ -1406,8 +1771,12 @@ Parser::generate_tree(Lex_Context* lex_context) {
 			parser->handle_procedure_declaration();
 		} else if (parser->matches_variable_declaration()) {
 			parser->handle_variable_declaration();
+		} else if (parser->matches_inferred_variable_declaration()) {
+			parser->handle_inferred_variable_declaration();
 		} else if (parser->on("if")) {
 			parser->handle_if();
+		} else if (parser->on("while")) {
+			parser->handle_while();
 		} else if (parser->on("{")) {
 			parser->handle_block();
 		} else if (parser->on("}")) {
@@ -1416,6 +1785,8 @@ Parser::generate_tree(Lex_Context* lex_context) {
 			parser->handle_standalone_statement();
 		}
 	}
+
+	parser->root_node->print();
 
 	return parser;
 

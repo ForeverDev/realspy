@@ -114,12 +114,13 @@ Lex_Context::handle_number() {
 	while (std::isdigit(peek())) {
 		buf << static_cast<char>(get());
 	}
-	if (peek() == '.') {
+	bool was_a_dot = peek() == '.';
+	if (was_a_dot) {
 		is_float = true;
 		buf << '.';
 		get();
 	}
-	if (!std::isdigit(peek())) {
+	if (was_a_dot && !std::isdigit(peek())) {
 		report_error("expected digit to follow token '.'");
 	}
 	while (std::isdigit(peek())) {
@@ -179,12 +180,12 @@ Lex_Context::handle_operator() {
 		"%=", "&=", "|=", "^=",
 		">>=", "<<=", ">>", "<<",
 		"&&", "||", "==", "!=",
-		"::", "->"
+		"::", "->", ":="
 	};
 
 	auto is_long_op = [](const std::string& op) -> bool {
 		size_t len = op.length();
-		for (const std::string& check: long_ops) {
+		for (const auto& check: long_ops) {
 			if (len > check.length()) {
 				continue;
 			}
@@ -195,7 +196,7 @@ Lex_Context::handle_operator() {
 		return false;
 	};
 
-	std::ostringstream buf;
+	std::stringstream buf;
 	Token t;
 	t.type = TOKEN_OPERATOR;
 	while (std::ispunct(peek())) {
@@ -223,6 +224,7 @@ Lexer::generate_tokens(const std::string& filename) {
 	state->col = 1;
 	state->on = state->handle.get();
 	state->next = state->handle.get();
+	state->handle.clear();
 	state->handle.seekg(0);
 
 	std::stringstream line_make;
@@ -230,21 +232,46 @@ Lexer::generate_tokens(const std::string& filename) {
 		if (state->on == '\n') {
 			state->raw_file.push_back(line_make.str());
 			line_make.str(std::string());
+			state->get();
+			state->on = state->peek();
+			if (std::isspace(state->on)) {
+				while (std::isspace(state->on)) {
+					if (state->on == '\n') {
+						state->raw_file.push_back("");
+					}
+					state->on = state->get();
+				}
+				state->handle.unget();
+			}
+			state->on = state->peek();
 		} else {
 			line_make << static_cast<char>(state->on);
+			state->get();
 		}
-		state->get();
 	}
-
+	
+	state->handle.clear();
 	state->handle.seekg(0);
 	
 	while ((state->on = state->peek()) != EOF) {
 		if (std::isspace(state->on)) {
 			if (state->on == '\n') {
 				state->line++;
+				state->get();
+				state->on = state->peek();
+				if (std::isspace(state->on)) {
+					while (std::isspace(state->on)) {
+						if (state->on == '\n') {
+							state->line++;
+						}
+						state->on = state->get();
+					}
+					state->handle.unget();
+				}
 				state->col = 1;
+			} else {
+				state->get();
 			}
-			state->get();
 			continue;
 		} else if (state->matches_number()) {
 			state->handle_number();
@@ -256,6 +283,12 @@ Lexer::generate_tokens(const std::string& filename) {
 			state->handle_operator();
 		}
 	}
+	
+	/*
+	for (auto& tok: *state->tokens) {
+		std::cout << tok.word << std::endl;
+	}
+	*/
 	
 	return state;
 
