@@ -324,7 +324,7 @@ Expression_Cast::to_string() const {
 void
 make_indent(int indent = 0) {
 	for (int i = 0; i < indent; i++) {
-		std::cout << "  ";
+		std::cout << " ";
 	}
 }
 
@@ -366,6 +366,7 @@ Expression_Binary::typecheck(Parse_Context* context) {
 		return false;	
 	};
 	
+	Datatype_Information* evaluated = nullptr;
 	auto left_eval = left->typecheck(context);
 
 	// '.' operator is a special case
@@ -440,7 +441,7 @@ Expression_Binary::typecheck(Parse_Context* context) {
 		}
 	}
 
-	if (has_rule(ALLOW_POINTER_LEFT_SIDE_INT) && left_eval->is_pointer()) {
+	if (!evaluated && has_rule(ALLOW_POINTER_LEFT_SIDE_INT) && left_eval->is_pointer()) {
 		if (!right_eval->is_int()) {
 			std::stringstream message;
 			message << "when the left operand of operator '";
@@ -450,19 +451,19 @@ Expression_Binary::typecheck(Parse_Context* context) {
 			message << "')";
 			context->report_error_at_indent(message.str(), tok->col);
 		} else {
-			return eval = left_eval;
+			evaluated = left_eval;
 		}
 	}
 
-	if (has_rule(ALLOW_POINTER_INT)) {
+	if (!evaluated && has_rule(ALLOW_POINTER_INT)) {
 		bool left_is_int = left_eval->is_int();
 		bool left_is_ptr = left_eval->is_pointer();	
 		bool right_is_int = right_eval->is_int();
 		bool right_is_ptr = right_eval->is_pointer();	
 		if (left_is_int && right_is_ptr) {
-			return eval = right_eval;
+			evaluated = right_eval;
 		} else if (left_is_ptr && right_is_int) {
-			return eval = left_eval;
+			evaluated = left_eval;
 		}
 	}
 
@@ -507,16 +508,16 @@ Expression_Binary::typecheck(Parse_Context* context) {
 	is_l_value = false;	
 
 	// implicit int->float cast
-	if (left_eval->is_float() && right_eval->is_int()) {
-		return eval = left_eval;
+	if (!evaluated && left_eval->is_float() && right_eval->is_int()) {
+		evaluated = left_eval;
 	}
 	
 	// implicit int->float cast
-	if (right_eval->is_float() && left_eval->is_int()) {
-		return eval = right_eval;
+	if (!evaluated && right_eval->is_float() && left_eval->is_int()) {
+		evaluated = right_eval;
 	}
 
-	if (!left_eval->matches(*right_eval)) {
+	if (!evaluated && !left_eval->matches(*right_eval)) {
 		std::stringstream message;
 		message << "type mismatch at operator '";
 		message << to_string();
@@ -532,12 +533,14 @@ Expression_Binary::typecheck(Parse_Context* context) {
 	if (value == COMPARE || value == COMPARE_NOT
 		|| value == LESS_THAN || value == LESS_THAN_EQUAL
 		|| value == GREATER_THAN || value == GREATER_THAN_EQUAL) {
-		return eval = context->type_bool;	
+		evaluated = context->type_bool;	
 	}
 
-	// left and right are same type, it doesn't
-	// matter which one is returned
-	return eval = left_eval;
+	if (!evaluated) {
+		evaluated = left_eval;
+	}
+
+	return eval = evaluated;
 	
 }
 
@@ -703,7 +706,6 @@ Expression_Identifier::typecheck(Parse_Context* context) {
 		switch (parent->type) {
 			case EXPRESSION_OPERATOR_BINARY: {
 				auto bin = static_cast<Expression_Binary *>(parent);
-				std::cout << "MEMEME\n";
 				if (bin->value == ASSIGN) {
 					switch (side) {
 						case LEAF_LEFT:
@@ -843,6 +845,43 @@ Ast_While::print(int indent = 0) const {
 	make_indent(indent);
 	std::cout << "]\n";
 }
+
+void
+Ast_For::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "FOR: [\n";
+	make_indent(indent + 1);
+	std::cout << "INITIALIZER: [\n";
+	if (initializer) {
+		initializer->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "CONDITION: [\n";
+	if (condition) {
+		condition->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "STATEMENT: [\n";
+	if (statement) {
+		statement->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent + 1);
+	std::cout << "CHILD: [\n";
+	if (child) {
+		child->print(indent + 2);
+	}
+	make_indent(indent + 1);
+	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
 void
 Ast_Declaration::print(int indent = 0) const {
 	make_indent(indent);
@@ -1274,7 +1313,7 @@ Parse_Context::handle_standalone_statement() {
 void
 Parse_Context::handle_if() {
 	auto node = new Ast_If;
-	Token* err_tok = token;
+	auto err_tok = token;
 	eat("if");
 	eat("(", "expected token '(' to follow token 'if'");
 	mark("(", ")");
@@ -1293,9 +1332,9 @@ Parse_Context::handle_if() {
 void
 Parse_Context::handle_while() {
 	auto node = new Ast_While;
-	Token* err_tok = token;
+	auto err_tok = token;
 	eat("while");
-	eat("(", "expected token '(' to follow token 'if'");
+	eat("(", "expected token '(' to follow token 'while'");
 	mark("(", ")");
 	node->condition = parse_expression_and_typecheck();
 	eat(")");
@@ -1306,6 +1345,31 @@ Parse_Context::handle_while() {
 		message << "')";
 		report_error_at_indent(message.str(), err_tok->col);
 	}
+	append_node(node);
+}
+
+void
+Parse_Context::handle_for() {
+	auto node = new Ast_For;
+	auto err_tok = token;
+	eat("for");
+	eat("(", "expected token '(' to follow 'for'");
+	mark(";");
+	node->initializer = parse_expression_and_typecheck();
+	eat(";");
+	mark(";");
+	node->condition = parse_expression_and_typecheck();
+	eat(";");
+	if (!node->condition->eval->matches(*type_bool)) {
+		std::stringstream message;
+		message << "for-loop condition must evaluate to type 'bool' (got type '";
+		message << node->condition->eval->to_string();
+		message << "')";
+		report_error_at_indent(message.str(), err_tok->col);
+	}
+	mark("(", ")");
+	node->statement = parse_expression_and_typecheck();
+	eat(")");
 	append_node(node);
 }
 
@@ -1363,6 +1427,12 @@ Parse_Context::append_node(Ast_Node* node) {
 		switch (append_target->type) {
 			case NODE_IF:
 				static_cast<Ast_If *>(append_target)->child = node;
+				break;
+			case NODE_WHILE:
+				static_cast<Ast_While *>(append_target)->child = node;
+				break;
+			case NODE_FOR:
+				static_cast<Ast_For *>(append_target)->child = node;
 				break;
 			case NODE_PROCEDURE_IMPLEMENTATION:
 				static_cast<Ast_Procedure *>(append_target)->child = node;
@@ -1619,8 +1689,6 @@ Parse_Context::parse_expression() {
 		report_error("an expression must have only once result");
 	}
 
-	tree.back()->print();
-
 	return tree.back();
 
 }
@@ -1628,7 +1696,9 @@ Parse_Context::parse_expression() {
 Expression*
 Parse_Context::parse_expression_and_typecheck() {
 	auto exp = parse_expression();
-	exp->typecheck(this);
+	if (exp) {
+		exp->typecheck(this);
+	}
 	return exp;
 }
 
@@ -1777,6 +1847,8 @@ Parser::generate_tree(Lex_Context* lex_context) {
 			parser->handle_if();
 		} else if (parser->on("while")) {
 			parser->handle_while();
+		} else if (parser->on("for")) {
+			parser->handle_for();
 		} else if (parser->on("{")) {
 			parser->handle_block();
 		} else if (parser->on("}")) {

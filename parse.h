@@ -385,6 +385,16 @@ namespace Parser {
 		Ast_Node* child = nullptr;
 	};
 
+	struct Ast_For : public Ast_Node {
+		Ast_For(): Ast_Node(NODE_FOR) {}
+		virtual void print(int) const override;
+		
+		Expression* initializer;
+		Expression* condition;
+		Expression* statement;
+		Ast_Node* child = nullptr;
+	};
+
 	struct Ast_Declaration : public Ast_Node {
 		Ast_Declaration(): Ast_Node(NODE_DECLARATION) {}
 		virtual void print(int) const override;
@@ -441,6 +451,7 @@ namespace Parser {
 			void handle_standalone_statement();
 			void handle_if();
 			void handle_while();
+			void handle_for();
 			void handle_block();
 			void handle_jump_out();
 			void append_node(Ast_Node*);

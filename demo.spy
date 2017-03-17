@@ -1,13 +1,17 @@
 proc :: (argument: int) -> void {
-
+	if (argument == argument + 1) {
+		for (argument = 10; argument < 20; argument += 1) {
+			argument;
+		}
+	}
 }
 
 proc :: (argument: int, another_argument: float) -> void {
-
+	while (argument == another_argument) {
+		argument += 1;
+	}
 }
 
 main :: (x: int, z: float) -> void {
-	
-	meme := proc;	
 	
 }
