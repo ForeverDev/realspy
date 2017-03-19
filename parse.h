@@ -13,6 +13,7 @@ namespace Parser {
 	struct Variable_Declaration;
 	struct Datatype_Information;
 	struct Struct_Information;
+	struct Procedure_Information;
 	class  Parse_Context;
 
 	enum Operator_Associativity {
@@ -94,7 +95,8 @@ namespace Parser {
 		LESS_THAN_EQUAL,
 		GREATER_THAN,
 		GREATER_THAN_EQUAL,
-		FIND_MEMBER
+		FIND_MEMBER,
+		COMMA
 	};
 
 	enum Unary_Operator_Type {
@@ -114,7 +116,8 @@ namespace Parser {
 		EXPRESSION_STRING_LITERAL,
 		EXPRESSION_IDENTIFIER,
 		EXPRESSION_DATATYPE,
-		EXPRESSION_CAST
+		EXPRESSION_CAST,
+		EXPRESSION_CALL
 	};
 
 	enum Ast_Node_Type {
@@ -147,8 +150,6 @@ namespace Parser {
 		std::string word;	
 		Expression* parent = nullptr;	
 		Leaf side; // only applicable if parent is binary operator
-		int line;
-		int col;
 		bool is_l_value = true; // if false, is_r_value == true
 	};
 
@@ -201,6 +202,19 @@ namespace Parser {
 
 		Datatype_Information* value;
 		Expression* operand;
+	};
+
+	struct Expression_Call : public Expression_Operator {
+		Expression_Call(): Expression_Operator(EXPRESSION_CALL) {}
+		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
+		virtual void print(int) const override;
+	
+		std::vector<Datatype_Information *> arg_types;
+		std::string call_sig;
+		Expression* proc;
+		Expression* argument;
+		int nargs;
 	};
 
 	struct Expression_Integer_Literal : public Expression {
@@ -310,6 +324,7 @@ namespace Parser {
 		virtual bool matches(const Datatype_Information&) const override;
 		std::string get_signature() const;
 		static std::string make_signature(const std::vector<Variable_Declaration *>&);
+		static std::string make_signature(const std::vector<Datatype_Information *>&);
 		
 		bool is_implemented = false;
 		bool determined = false;
@@ -440,6 +455,7 @@ namespace Parser {
 
 			bool matches_datatype() const;
 			bool matches_struct_declaration() const;
+			bool matches_comma_identifier_chain();
 			bool matches_variable_declaration() const;
 			bool matches_procedure_declaration() const;
 			bool matches_inferred_variable_declaration() const;
@@ -486,6 +502,7 @@ namespace Parser {
 		friend class Expression_String_Literal;
 		friend class Expression_Identifier;
 		friend class Expression_Datatype;
+		friend class Expression_Call;
 	};
 
 	Parse_Context* generate_tree(Lex_Context*);

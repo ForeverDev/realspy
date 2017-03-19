@@ -38,7 +38,8 @@ std::map<std::string, Binary_Operator_Type> Expression_Binary::word_map {
 	{"<=",  LESS_THAN_EQUAL},
 	{">",   GREATER_THAN},
 	{">=",  GREATER_THAN_EQUAL},
-	{".",   FIND_MEMBER}
+	{".",   FIND_MEMBER},
+	{",",   COMMA}
 };
 
 std::map<std::string, Unary_Operator_Type> Expression_Unary::word_map {
@@ -75,12 +76,13 @@ static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor("-",        8, ASSOC_LEFT, OP_BINARY, {ALLOW_POINTER_INT, DISALLOW_POINTER}),
 	Operator_Descriptor("*",        9, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
 	Operator_Descriptor("/",        9, ASSOC_LEFT, OP_BINARY, {DISALLOW_POINTER}),
-	Operator_Descriptor("__CAST__", 10, ASSOC_RIGHT, OP_UNARY, {IGNORE_ALL_RULES}),
+	Operator_Descriptor("__CAST__", 10, ASSOC_RIGHT, OP_UNARY, {}), // special case...
 	Operator_Descriptor("@",        10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_L_VALUE}),
 	Operator_Descriptor("$",        10, ASSOC_RIGHT, OP_UNARY, {DISALLOW_NON_POINTER}),
 	Operator_Descriptor("!",        10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("new",      10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_DATATYPE}),
-	Operator_Descriptor(".",        11, ASSOC_LEFT, OP_BINARY, {}) // special case...
+	Operator_Descriptor(".",        11, ASSOC_LEFT, OP_BINARY, {}), // special case...
+	Operator_Descriptor("__CALL__", 11, ASSOC_LEFT, OP_UNARY, {}) // special case...
 };
 
 // DATATYPE IMPLEMENTATION 
@@ -164,6 +166,15 @@ Procedure_Information::make_signature(const std::vector<Variable_Declaration *>&
 	std::stringstream sig;
 	for (const auto arg: call_info) {
 		sig << arg->dt->to_string();	
+	}
+	return sig.str();
+}
+
+std::string
+Procedure_Information::make_signature(const std::vector<Datatype_Information *>& call_info) {
+	std::stringstream sig;
+	for (const auto arg: call_info) {
+		sig << arg->to_string();	
 	}
 	return sig.str();
 }
@@ -318,6 +329,11 @@ Expression_Cast::to_string() const {
 	return "#" + value->to_string();	
 }
 
+std::string
+Expression_Call::to_string() const {
+	return "CALL";
+}
+
 // ... print methods ...
 
 // helper function
@@ -351,6 +367,13 @@ void
 Expression_Cast::print(int indent = 0) const {
 	Expression::print(indent);
 	operand->print(indent + 1);
+}
+
+void
+Expression_Call::print(int indent = 0) const {
+	Expression::print(indent);
+	proc->print(indent + 1);
+	argument->print(indent + 1);
 }
 
 // ... typecheck methods ...
@@ -601,24 +624,32 @@ Expression_Cast::typecheck(Parse_Context* context) {
 		return eval = value;
 	}
 
+	auto illegal_cast = [&]() {
+		std::stringstream message;
+		message << "illegal cast from type '";
+		message << op_type->to_string();
+		message << "' to type '";
+		message << value->to_string();
+		message << "'";
+		context->report_error_at_indent(message.str(), token->col);
+	};
+
 	// ensure that it is a valid cast
 	if (value->is_int() || value->is_bool()) {
 		// if we're casting to an int/bool, the only valid operand type
 		// is a float, byte, bool, or pointer... (e.g. structs are not allowed,
 		// as that does not make any sense)
 		if (!op_type->is_float() && !op_type->is_byte() && !op_type->is_bool() && !op_type->is_int() && !op_type->is_pointer()) {
-			std::stringstream message;
-			message << "invalid cast from type '";
-			message << op_type->to_string();
-			message << "' to type '";
-			message << value->to_string();
-			message << "' (only floats, bytes, bools, and pointers can be cast to '";
-			message << value->to_string();
-			message << "')";
-			context->report_error_at_indent(message.str(), token->col);
+			illegal_cast();
 		}
-
 	}
+
+	if (!op_type->is_int() && !op_type->is_pointer() && value->is_pointer()) {
+		illegal_cast();
+	}
+
+	std::cout << "MEMEZ\n";
+
 
 	return eval = value;
 }
@@ -703,6 +734,8 @@ Expression_Identifier::typecheck(Parse_Context* context) {
 			not_enough_context();
 		}
 
+		Expression* illegal_operator = nullptr;
+
 		switch (parent->type) {
 			case EXPRESSION_OPERATOR_BINARY: {
 				auto bin = static_cast<Expression_Binary *>(parent);
@@ -715,11 +748,49 @@ Expression_Identifier::typecheck(Parse_Context* context) {
 							proc_context = dynamic_cast<Procedure_Information *>(bin->left->typecheck(context));	
 							break;	
 					}
+				} else {
+					illegal_operator = parent;
+				}
+				break;
+			}
+			case EXPRESSION_CALL: {
+				auto call = static_cast<Expression_Call *>(parent);
+
+				// if the parent is a call, we know that the call's 'call_sig' field
+				// has already been determined.  we can use that field to find
+				// a matching procedure
+				auto ast_proc = context->get_procedure(value, call->call_sig);
+				if (ast_proc) {
+					proc_context = ast_proc->info;
+				} else {
+					// if a procedure with that name exists but we didn't find
+					// a matching signature, then we are calling an invalid overload
+					if (context->get_all_procedures(value).size() > 0) {
+						// make a dummy to report the error
+						Procedure_Information dummy;
+						for (auto arg_d: call->arg_types) {
+							auto decl = new Variable_Declaration;
+							decl->dt = arg_d;
+							decl->has_name = false;
+							dummy.args.push_back(decl);
+						}
+						dummy.ret = context->type_void;
+						no_matching_overload(&dummy);
+					}
 				}
 				break;
 			}
 			default:
+				illegal_operator = parent;
 				break;
+		}
+
+		if (illegal_operator) {
+			std::stringstream message;
+			message << "illegal operator '";
+			message << illegal_operator->to_string();
+			message << "' being used on a procedure (did you forget to call the procedure?)";
+			context->report_error_at_indent(message.str(), illegal_operator->token->col);
 		}
 
 		if (!proc_context) {
@@ -749,6 +820,97 @@ Datatype_Information*
 Expression_Datatype::typecheck(Parse_Context* context) {
 	is_l_value = false;	
 	return eval = value;
+}
+
+Datatype_Information*
+Expression_Call::typecheck(Parse_Context* context) {
+	/*
+	auto proc_t = proc->typecheck(context);
+	auto proc_d_t = dynamic_cast<Procedure_Information *>(proc_t);
+	if (!proc_d_t) {
+		context->report_error_at_indent("attempt to call a non-procedure value",
+									    token->col);
+	}
+	*/
+
+	std::vector<Expression *> sorted_arguments;
+	
+	if (argument) {
+		if (argument->is_binary_type(COMMA)) {
+			// find lowest comma;
+			auto lowest_comma = argument;
+			while (lowest_comma->is_binary_type(COMMA)) {
+				lowest_comma = static_cast<Expression_Binary *>(lowest_comma)->left;
+			}
+			lowest_comma = lowest_comma->parent;
+			auto comma_as_bin = static_cast<Expression_Binary *>(lowest_comma);
+			comma_as_bin->left->typecheck(context);
+			comma_as_bin->right->typecheck(context);
+			sorted_arguments.push_back(comma_as_bin->left);
+			sorted_arguments.push_back(comma_as_bin->right);
+			while (comma_as_bin->parent && comma_as_bin->right) {
+				comma_as_bin = static_cast<Expression_Binary *>(comma_as_bin->parent);
+				comma_as_bin->right->print();
+				comma_as_bin->right->typecheck(context);
+				sorted_arguments.push_back(comma_as_bin->right);
+			}	
+		} else {
+			argument->typecheck(context);
+			sorted_arguments.push_back(argument);
+		}
+	}
+
+	std::vector<Datatype_Information *> evals;
+	for (auto e: sorted_arguments) {
+		evals.push_back(e->eval);
+	}
+	
+	arg_types = evals;	
+	call_sig = Procedure_Information::make_signature(evals);	
+	
+	proc->typecheck(context);
+
+	auto proc_pi = dynamic_cast<Procedure_Information *>(proc->eval);
+	int expected_args = proc_pi->args.size();
+	int given_args = evals.size();
+
+	if (!proc_pi) {
+		std::stringstream message;
+		message << "attempt to call a non-procedure value (got type '";
+		message << proc->eval->to_string();
+		message << "')";
+		context->report_error_at_indent(message.str(), token->col);
+	}
+
+	if (expected_args != given_args) {
+		std::stringstream message;
+		message << "procedure expects ";
+		message << expected_args;
+		message << " arguments, got ";
+		message << given_args;
+		message << ".\nnote, signature of procedure is: '";
+		message << proc_pi->to_string();
+		message << "'";
+		context->report_error_at_indent(message.str(), token->col);
+	}
+
+	for (int i = 0; i < expected_args; i++) {
+		if (evals[i] != proc_pi->args[i]->dt) {
+			std::stringstream message;
+			message << "type mismatch in procedure call.  argument #";
+			message << i;
+			message << " should be of type '";
+			message << proc_pi->args[i]->dt->to_string();
+			message << "' (got type '";
+			message << evals[i]->to_string();
+			message << "')\nnote, signature of procedure is: '";
+			message << proc_pi->to_string();
+			message << "'";
+			context->report_error_at_indent(message.str(), sorted_arguments[i]->token->col);
+		}
+	}
+
+	return eval = proc_pi->ret;
 }
 
 // AST NODE IMPLEMENTATION
@@ -922,7 +1084,7 @@ Parse_Context::report_error(const std::string& message) const {
 			std::cerr << "_";
 		}
 		std::cerr << "^";
-		for (int i = fail_indent + 1; i < lex_context->raw_file[line - 1].length() - 1; i++) {
+		for (int i = fail_indent + 1; i < lex_context->raw_file[line - 1].length(); i++) {
 			std::cerr << "_";
 		}
 	}
@@ -1038,11 +1200,12 @@ Parse_Context::register_type(Datatype_Information* dt) {
 void
 Parse_Context::register_procedure(Ast_Procedure* proc) {
 	auto info = proc->info;
-	if (get_procedure(info->type_name, info->get_signature())) {
+	if (auto prev = get_procedure(info->type_name, info->get_signature())) {
 		std::stringstream message;
 		message << "reimplementation of procedure '";
 		message << info->type_name;
-		message << "' - a infoedure with that name and signature already exists.";
+		message << "' - a procedure with that name and signature already exists.\n";
+		message << "note: the other procedure was declared on line #" << prev->declared_line;
 		report_error(message.str());
 	}
 	defined_procedures.push_back(proc);
@@ -1135,6 +1298,28 @@ Parse_Context::matches_datatype() const {
 }
 
 bool
+Parse_Context::matches_comma_identifier_chain() {
+	if (!is_identifier()) {
+		return false;
+	}
+
+	int start = token_index;
+	eat();
+
+	while (true) {
+		if (!on(",")) {
+			focus_token(start);
+			return true;
+		}
+		eat(",");
+		if (!is_identifier()) {
+			return false;
+		}
+		eat();
+	}
+}
+
+bool
 Parse_Context::matches_variable_declaration() const {
 	return is_identifier() && on(1, ":");	
 }
@@ -1185,7 +1370,6 @@ Parse_Context::handle_struct_declaration() {
 			info->fields.push_back(field);
 		}
 		eat("}", "expected token '}' to close struct declaration");
-		eat(";", "expected token ';' to follow struct declaration");
 	} else {
 		report_error("invalid token following token 'struct'");
 	}
@@ -1528,6 +1712,8 @@ Parse_Context::parse_expression() {
 		raw.push_back(get_token(i));
 	} 
 
+	int start = token_index;
+
 	// expects end of expression to be pointer to by 'marked'
 	while (token_index != marked_index) {
 		switch (token->type) {
@@ -1561,6 +1747,25 @@ Parse_Context::parse_expression() {
 			}
 			case TOKEN_OPERATOR: {
 				if (token->word == "(") {
+
+					if (token_index > start) {
+						auto prev = get_token(token_index - 1);
+						if (prev->word == ")" || prev->type == TOKEN_IDENTIFIER) {
+							auto call = new Expression_Call;
+							int save = marked_index;
+							auto tok = token;
+							eat("(");
+							mark("(", ")");
+							call->argument = parse_expression();
+							call->desc = get_operator_descriptor("__CALL__");
+							call->token = tok;
+							marked_index = save;
+							shunting_pops(call->desc);
+							operators.push_back(call);
+							break;
+						}
+					}
+
 					auto push = new Expression_Unary;
 					push->token = token;
 					push->value = OPEN_PARENTHESIS;
@@ -1594,7 +1799,8 @@ Parse_Context::parse_expression() {
 					auto desc = get_operator_descriptor(token->word);
 					Expression_Operator* push;
 					if (!desc) {
-						std::stringstream err("unknown operator '");
+						std::stringstream err;
+						err << "unknown operator '";
 						err << token->word;
 						err << "'";
 						report_error(err.str());
@@ -1624,7 +1830,7 @@ Parse_Context::parse_expression() {
 	}
 
 	while (operators.size() > 0) {
-		Expression_Operator* back = operators.back();
+		auto back = operators.back();
 		if (back->is_unary_type(OPEN_PARENTHESIS)) {
 			report_error("mismatched parentheses");
 		}
@@ -1655,7 +1861,7 @@ Parse_Context::parse_expression() {
 				tree.push_back(e);
 				break;
 			case EXPRESSION_OPERATOR_BINARY: {
-				Expression_Binary* bin = static_cast<Expression_Binary *>(e);
+				auto bin = static_cast<Expression_Binary *>(e);
 				Expression* pops[2];
 				for (int i = 0; i < 2; i++) {
 					pops[i] = safe_pop();
@@ -1669,17 +1875,24 @@ Parse_Context::parse_expression() {
 				break;
 			}
 			case EXPRESSION_OPERATOR_UNARY: {
-				Expression_Unary* un = static_cast<Expression_Unary *>(e);
+				auto un = static_cast<Expression_Unary *>(e);
 				un->operand = safe_pop();
 				un->operand->parent = un;
 				tree.push_back(un);
 				break;
 			}
 			case EXPRESSION_CAST: {
-				Expression_Cast* cast = static_cast<Expression_Cast *>(e);
+				auto cast = static_cast<Expression_Cast *>(e);
 				cast->operand = safe_pop();
 				cast->operand->parent = cast;
 				tree.push_back(cast);
+				break;
+			}
+			case EXPRESSION_CALL: {
+				auto call = static_cast<Expression_Call *>(e);
+				call->proc = safe_pop();
+				call->proc->parent = call;
+				tree.push_back(call);	
 				break;
 			}
 		}
@@ -1697,6 +1910,7 @@ Expression*
 Parse_Context::parse_expression_and_typecheck() {
 	auto exp = parse_expression();
 	if (exp) {
+		exp->print();
 		exp->typecheck(this);
 	}
 	return exp;
@@ -1758,6 +1972,7 @@ Parse_Context::parse_datatype() {
 		return proc;
 
 	} else {	
+		// TODO MAKE A REAL COPY HERE!!! THIS IS CURRENTLY VERRRRYYYYY BAD!!!!
 		templ = get_type(token->word);
 		if (!templ) {
 			report_error("invalid type name '" + token->word + "'");
