@@ -14,6 +14,7 @@ namespace Parser {
 	struct Datatype_Information;
 	struct Struct_Information;
 	struct Procedure_Information;
+	struct Byte_Information;
 	class  Parse_Context;
 
 	enum Operator_Associativity {
@@ -127,7 +128,8 @@ namespace Parser {
 		NODE_BLOCK,
 		NODE_PROCEDURE_IMPLEMENTATION,
 		NODE_DECLARATION,
-		NODE_STATEMENT
+		NODE_STATEMENT,
+		NODE_RETURN
 	};
 
 	struct Expression {
@@ -275,17 +277,19 @@ namespace Parser {
 	struct Datatype_Information {
 		virtual ~Datatype_Information() {};
 		Datatype_Information() {}
-		Datatype_Information(const Datatype_Information&);
-		Datatype_Information* clone() const;
+		virtual Datatype_Information* clone() const = 0;
 		virtual std::string to_string() const;
+		virtual bool matches(const Datatype_Information&) const;
 		bool is_pointer() const { return ptr_dim > 0; }
 		bool is_array() const { return arr_dim > 0; }
 		bool is_int() const { return type_name == "int" && !is_pointer() && !is_array(); }
 		bool is_float() const { return type_name == "float" && !is_pointer() && !is_array(); }
 		bool is_byte() const { return type_name == "byte" && !is_pointer() && !is_array(); }
 		bool is_bool() const { return type_name == "bool" && !is_pointer() && !is_array(); }
+		bool is_void() const { return type_name == "void" && !is_pointer() && !is_array(); }
 		bool matches_strict(const Datatype_Information&) const;
-		virtual bool matches(const Datatype_Information&) const;
+
+		void fill_fields(const Datatype_Information&);
 
 		std::string type_name;
 		int ptr_dim = 0;
@@ -295,15 +299,14 @@ namespace Parser {
 
 	struct Struct_Field {
 		Struct_Field() {}
-		Struct_Field(const Struct_Field&);
 
 		Variable_Declaration* decl;
 		Struct_Information* parent_struct;
 	};
 
 	struct Struct_Information : public Datatype_Information {
-		Struct_Information(const Struct_Information&);
 		Struct_Information() {}
+		virtual Struct_Information* clone() const override;
 		Struct_Field* get_field(const std::string& id) {
 			for (auto field: fields) {
 				if (field->decl->identifier == id) {
@@ -318,8 +321,8 @@ namespace Parser {
 	};
 
 	struct Procedure_Information : public Datatype_Information {
-		Procedure_Information(const Procedure_Information&);
 		Procedure_Information() {}
+		virtual Procedure_Information* clone() const override;
 		virtual std::string to_string() const override;
 		virtual bool matches(const Datatype_Information&) const override;
 		std::string get_signature() const;
@@ -327,29 +330,33 @@ namespace Parser {
 		static std::string make_signature(const std::vector<Datatype_Information *>&);
 		
 		bool is_implemented = false;
-		bool determined = false;
 		std::vector<Variable_Declaration *> args;
 		Datatype_Information* ret;
 	};
 
 	struct Integer_Information : public Datatype_Information {
-		Integer_Information(const Integer_Information&);
 		Integer_Information() {}
+		virtual Integer_Information* clone() const override;
 	};
 
 	struct Float_Information : public Datatype_Information {
-		Float_Information(const Float_Information&);
 		Float_Information() {}
+		virtual Float_Information* clone() const override;
 	};
 
 	struct Void_Information : public Datatype_Information {
-		Void_Information(const Void_Information&);
 		Void_Information() {}
+		virtual Void_Information* clone() const override;
 	};
 
 	struct Bool_Information : public Datatype_Information {
-		Bool_Information(const Bool_Information&);
 		Bool_Information() {}
+		virtual Bool_Information* clone() const override;
+	};
+
+	struct Byte_Information : public Datatype_Information {
+		Byte_Information() {}
+		virtual Byte_Information* clone() const override;
 	};
 
 	struct Ast_Node {
@@ -417,6 +424,13 @@ namespace Parser {
 		Variable_Declaration* decl = nullptr;
 	};
 
+	struct Ast_Return : public Ast_Node {
+		Ast_Return(): Ast_Node(NODE_RETURN) {}
+		virtual void print(int) const override;
+
+		Expression* expression;
+	};
+
 	class Parse_Context {
 		private:
 			int token_index;
@@ -430,10 +444,13 @@ namespace Parser {
 			Void_Information* type_void;
 			Float_Information* type_float;
 			Bool_Information* type_bool;
+			Byte_Information* type_byte;
+			Byte_Information* type_string;
 			Ast_Node* focus;
 			Ast_Block* root_node;
 			Ast_Block* current_block;
 			Ast_Procedure* current_procedure = nullptr;
+			bool guard_register_type = false;
 			
 			void report_error(const std::string&) const;	
 			void report_error_at_indent(const std::string&, int);
@@ -468,6 +485,7 @@ namespace Parser {
 			void handle_if();
 			void handle_while();
 			void handle_for();
+			void handle_return();
 			void handle_block();
 			void handle_jump_out();
 			void append_node(Ast_Node*);

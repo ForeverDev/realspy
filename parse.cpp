@@ -85,25 +85,17 @@ static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor("__CALL__", 11, ASSOC_LEFT, OP_UNARY, {}) // special case...
 };
 
-// DATATYPE IMPLEMENTATION 
-Datatype_Information::Datatype_Information(const Datatype_Information& to_copy) {
-	ptr_dim = to_copy.ptr_dim;
-	arr_dim = to_copy.arr_dim;
-	size = to_copy.size;
-	type_name = to_copy.type_name;
-}
-
-Datatype_Information*
-Datatype_Information::clone() const {
-	if (const Struct_Information* a = dynamic_cast<const Struct_Information *>(this)) {
-		return new Struct_Information(*a);
-	}
-	return nullptr; // should never be reached
+void
+Datatype_Information::fill_fields(const Datatype_Information& dt) {
+	ptr_dim = dt.ptr_dim;
+	arr_dim = dt.arr_dim;
+	type_name = dt.type_name; 
 }
 
 bool
 Datatype_Information::matches(const Datatype_Information& other) const {
 	if (type_name != other.type_name) {
+		std::cout << type_name << " " << other.type_name << std::endl;
 		return false;
 	}
 	if (ptr_dim != other.ptr_dim) {
@@ -142,20 +134,6 @@ Procedure_Information::to_string() const {
 	buf << ") -> ";
 	buf << ret->to_string();
 	return buf.str();
-}
-
-Struct_Information::Struct_Information(const Struct_Information& to_copy): Datatype_Information(to_copy) {
-	for (const auto field: to_copy.fields) {
-		fields.push_back(new Struct_Field(*field));
-	}
-	is_complete = to_copy.is_complete;
-}
-
-Procedure_Information::Procedure_Information(const Procedure_Information& to_copy): Datatype_Information(to_copy) {
-	for (const auto arg: to_copy.args) {
-		args.push_back(new Variable_Declaration(*arg));
-	}
-	is_implemented = to_copy.is_implemented;
 }
 
 std::string 
@@ -204,22 +182,70 @@ Procedure_Information::matches(const Datatype_Information& other) const {
 	return true;
 }
 
-Integer_Information::Integer_Information(const Integer_Information& to_copy): Datatype_Information(to_copy) {
-
+Procedure_Information*
+Procedure_Information::clone() const {
+	auto copy = new Procedure_Information;
+	copy->fill_fields(*this);
+	for (auto arg: args) {
+		copy->args.push_back(new Variable_Declaration(*arg));	
+	}
+	copy->ret = ret->clone();
+	return copy;
 }
 
-Void_Information::Void_Information(const Void_Information& to_copy): Datatype_Information(to_copy) {
-
+Struct_Information*
+Struct_Information::clone() const {
+	auto copy = new Struct_Information;
+	copy->fill_fields(*this);
+	for (auto field: fields) {
+		auto new_field = new Struct_Field;
+		new_field->decl = new Variable_Declaration(*field->decl);
+		new_field->parent_struct = copy;
+		copy->fields.push_back(new_field);
+	}
+	copy->is_complete = true;
+	return copy;
 }
 
-Bool_Information::Bool_Information(const Bool_Information& to_copy): Datatype_Information(to_copy) {
+Integer_Information*
+Integer_Information::clone() const {
+	auto copy = new Integer_Information;
+	copy->fill_fields(*this);
+	return copy;
+}
 
+Float_Information*
+Float_Information::clone() const {
+	auto copy = new Float_Information;
+	copy->fill_fields(*this);
+	return copy;
+}
+
+Void_Information*
+Void_Information::clone() const {
+	auto copy = new Void_Information;
+	copy->fill_fields(*this);
+	return copy;
+}
+
+Bool_Information*
+Bool_Information::clone() const {
+	auto copy = new Bool_Information;
+	copy->fill_fields(*this);
+	return copy;
+}
+
+Byte_Information*
+Byte_Information::clone() const {
+	auto copy = new Byte_Information;
+	copy->fill_fields(*this);
+	return copy;
 }
 
 // VARIABLE DECLARATION IMPLEMENTATION
 Variable_Declaration::Variable_Declaration(const Variable_Declaration& to_copy) {
 	identifier = to_copy.identifier;
-	dt = new Datatype_Information(*to_copy.dt);
+	dt = to_copy.dt->clone();
 }
 
 Variable_Declaration*
@@ -234,11 +260,6 @@ Variable_Declaration::to_string() const {
 	buf << ": ";
 	buf << dt->to_string();
 	return buf.str();
-}
-
-Struct_Field::Struct_Field(const Struct_Field& to_copy) {
-	decl = new Variable_Declaration(*to_copy.decl);
-	parent_struct = to_copy.parent_struct; // TODO bad?
 }
 
 // EXPRESSION IMPLEMENTATION
@@ -373,7 +394,9 @@ void
 Expression_Call::print(int indent = 0) const {
 	Expression::print(indent);
 	proc->print(indent + 1);
-	argument->print(indent + 1);
+	if (argument) {
+		argument->print(indent + 1);
+	}
 }
 
 // ... typecheck methods ...
@@ -598,16 +621,42 @@ Expression_Unary::typecheck(Parse_Context* context) {
 		message << "operand of operator '";
 		message << to_string();
 		message << "' must be an L-value. (it is currently an R-value)";
-		context->report_error_at_indent(message.str(), tok->col);
+		context->report_error_at_indent(message.str(), operand->token->col);
+	}
+	
+	switch (value) {
+		case DEREFERENCE:
+			is_l_value = true;
+			break;
+		default:
+			is_l_value = false;
+			break;
 	}
 
-	if (value == ADDRESS_OF) {
-		is_l_value = true;
-	} else {
-		is_l_value = false;
+	switch (value) {
+		case DEREFERENCE: {
+			if (!operand_eval->is_pointer()) {
+				std::stringstream message;
+				message << "attempt to dereference a non-pointer (got type '";
+				message << operand_eval->to_string();
+				message << "')";
+				context->report_error_at_indent(message.str(), tok->col);
+			}
+			auto copy = operand_eval->clone();
+			copy->ptr_dim -= 1;
+			return eval = copy;
+		}
+		case ADDRESS_OF: {
+			if (!operand->is_l_value) {
+				context->report_error_at_indent("attempt to take the address of an R-value", tok->col);
+			}
+			auto copy = operand_eval->clone();
+			copy->ptr_dim += 1;
+			return eval = copy;
+		}	
+		default:
+			return eval = operand_eval;		
 	}
-
-	return eval = operand_eval;
 
 }
 
@@ -648,8 +697,6 @@ Expression_Cast::typecheck(Parse_Context* context) {
 		illegal_cast();
 	}
 
-	std::cout << "MEMEZ\n";
-
 
 	return eval = value;
 }
@@ -669,7 +716,7 @@ Expression_Float_Literal::typecheck(Parse_Context* context) {
 Datatype_Information*
 Expression_String_Literal::typecheck(Parse_Context* context) {
 	is_l_value = false;
-	return nullptr;
+	return eval = context->type_string;
 }
 
 Datatype_Information*
@@ -895,10 +942,10 @@ Expression_Call::typecheck(Parse_Context* context) {
 	}
 
 	for (int i = 0; i < expected_args; i++) {
-		if (evals[i] != proc_pi->args[i]->dt) {
+		if (!evals[i]->matches(*proc_pi->args[i]->dt)) {
 			std::stringstream message;
 			message << "type mismatch in procedure call.  argument #";
-			message << i;
+			message << i + 1;
 			message << " should be of type '";
 			message << proc_pi->args[i]->dt->to_string();
 			message << "' (got type '";
@@ -964,6 +1011,17 @@ Ast_Procedure::print(int indent = 0) const {
 	}
 	make_indent(indent + 1);
 	std::cout << "]\n";
+	make_indent(indent);
+	std::cout << "]\n";
+}
+
+void
+Ast_Return::print(int indent = 0) const {
+	make_indent(indent);
+	std::cout << "RETURN: [\n";
+	if (expression) {
+		expression->print(indent + 1);
+	}
 	make_indent(indent);
 	std::cout << "]\n";
 }
@@ -1168,11 +1226,13 @@ Parse_Context::eat_and_get() {
 
 bool
 Parse_Context::on(const std::string& word) const {
+	assert_token();
 	return token->word == word;
 }
 
 bool
 Parse_Context::on(int peek_index, const std::string& word) const {
+	assert_token();
 	if (token_index + peek_index >= lex_context->tokens->size()) {
 		return false;
 	}
@@ -1181,17 +1241,19 @@ Parse_Context::on(int peek_index, const std::string& word) const {
 
 bool
 Parse_Context::is_identifier() const {
+	assert_token();
 	return token->type == TOKEN_IDENTIFIER;
 }
 
 bool
 Parse_Context::is_operator() const {
+	assert_token();
 	return token->type == TOKEN_OPERATOR;
 }
 
 void
 Parse_Context::register_type(Datatype_Information* dt) {
-	if (get_type(dt->type_name)) {
+	if (get_type(dt->type_name) && guard_register_type) {
 		report_error("a type with the name '" + dt->type_name + "' already exists");
 	}
 	defined_types.push_back(dt);
@@ -1237,7 +1299,7 @@ Parse_Context::get_all_procedures(const std::string& name) const {
 
 Datatype_Information*
 Parse_Context::get_type(const std::string& type_name) const {
-	for (Datatype_Information* dt: defined_types) {
+	for (auto dt: defined_types) {
 		if (dt->type_name == type_name) {
 			return dt;
 		}
@@ -1247,11 +1309,12 @@ Parse_Context::get_type(const std::string& type_name) const {
 
 Variable_Declaration*
 Parse_Context::get_local(const std::string& identifier) const {
-	Ast_Block* block_check = current_block;
+	auto block_check = current_block;
 	while (true) {
 		if (!block_check) {
 			break;
 		}
+		block_check->print();
 		for (auto node: block_check->children) {
 			if (auto check = dynamic_cast<Ast_Declaration *>(node)) {
 				if (check->decl->identifier == identifier) {
@@ -1259,7 +1322,7 @@ Parse_Context::get_local(const std::string& identifier) const {
 				}
 			}
 		}
-		Ast_Node* scan_up = block_check->parent;
+		auto scan_up = block_check->parent;
 		while (scan_up) {
 			if (scan_up->type == NODE_BLOCK) {
 				block_check = static_cast<Ast_Block *>(scan_up);
@@ -1558,6 +1621,33 @@ Parse_Context::handle_for() {
 }
 
 void
+Parse_Context::handle_return() {
+	if (!current_procedure) {
+		report_error_at_indent("a return statement must exist inside the body of a procedure", token->col);
+	}
+	auto node = new Ast_Return;
+	auto expected_type = current_procedure->info->ret;
+	auto err_tok = token;
+	eat("return");
+	mark(";");
+	node->expression = parse_expression_and_typecheck();
+	if (expected_type->is_void() && node->expression) {
+		report_error_at_indent("procedure with return type 'void' shouldn't return an expression", err_tok->col);
+	}
+	if (!node->expression->eval->matches(*expected_type)) {
+		std::stringstream message;
+		message << "type mismatch in return statement.  procedure must return value of type '";
+		message << expected_type->to_string();
+		message << "' (got type '";
+		message << node->expression->eval->to_string();
+		message << "')";
+		report_error_at_indent(message.str(), err_tok->col);
+	}
+	eat(";");
+	append_node(node);
+}
+
+void
 Parse_Context::handle_block() {
 	Ast_Block* block = new Ast_Block;
 	eat("{");
@@ -1600,7 +1690,7 @@ Parse_Context::append_node(Ast_Node* node) {
 			report_error(message.str()); 
 		}
 	}
-	
+
 	if (append_target) {
 
 		if (node->type == NODE_DECLARATION) {
@@ -1774,7 +1864,7 @@ Parse_Context::parse_expression() {
 					Expression* back;
 					while (true) {
 						if (operators.size() == 0) {
-							report_error("unexpected closing parenthesis");
+							report_error_at_indent("unexpected closing parenthesis", token->col);
 						}
 						back = operators.back();
 						if (back->is_unary_type(OPEN_PARENTHESIS)) {
@@ -1787,7 +1877,7 @@ Parse_Context::parse_expression() {
 				} else if (token->word == "#") {
 					eat();
 					if (!matches_datatype()) {
-						report_error("expected datatype to follow cast operator '#'");
+						report_error_at_indent("expected datatype to follow cast operator '#'", token->col);
 					}
 					auto push = new Expression_Cast;
 					push->token = token;
@@ -1962,7 +2052,6 @@ Parse_Context::parse_datatype() {
 		eat();
 	}
 
-	Datatype_Information* templ;
 	
 	if (on("(")) {
 		
@@ -1973,12 +2062,15 @@ Parse_Context::parse_datatype() {
 
 	} else {	
 		// TODO MAKE A REAL COPY HERE!!! THIS IS CURRENTLY VERRRRYYYYY BAD!!!!
-		templ = get_type(token->word);
+		auto templ = get_type(token->word);
 		if (!templ) {
 			report_error("invalid type name '" + token->word + "'");
 		}
+		auto copy = templ->clone();
+		copy->ptr_dim = ptr_dim;
+		copy->arr_dim = arr_dim;
 		eat();
-		return templ; // TODO is this dangerous??????
+		return copy;
 	}
 
 	return nullptr;
@@ -2011,36 +2103,51 @@ Parse_Context::parse_struct_field(Struct_Information* parent_struct) {
 
 void
 Parse_Context::init_types() {
-	Integer_Information* t_int = new Integer_Information;
+	auto t_int = new Integer_Information;
 	t_int->type_name = "int";
 	t_int->size = 8;
 	type_int = t_int;
 	register_type(t_int);
 
-	Float_Information* t_float = new Float_Information;
+	auto t_float = new Float_Information;
 	t_float->type_name = "float";
 	t_float->size = 8;
 	type_float = t_float;
 	register_type(t_float);
 
-	Void_Information* t_void = new Void_Information;
+	auto t_void = new Void_Information;
 	t_void->type_name = "void";
 	t_void->size = 0;
 	type_void = t_void;
 	register_type(t_void);
 
-	Bool_Information* t_bool = new Bool_Information;
+	auto t_byte = new Byte_Information;
+	t_byte->type_name = "byte";
+	t_byte->size = 1;
+	type_byte = t_byte;
+	register_type(t_byte);
+
+	auto t_string = new Byte_Information;
+	t_string->type_name = "byte";
+	t_string->size = 1;
+	t_string->ptr_dim = 1;
+	type_string = t_string;
+	register_type(t_string);
+
+	auto t_bool = new Bool_Information;
 	t_bool->type_name = "bool";
 	t_bool->size = 8;
 	type_bool = t_bool;
 	register_type(t_bool);
+
+	guard_register_type = false;
 
 }
 
 Parse_Context*
 Parser::generate_tree(Lex_Context* lex_context) {
 	
-	Parse_Context* parser = new Parse_Context;
+	auto parser = new Parse_Context;
 	parser->lex_context = lex_context;
 	parser->token = &lex_context->tokens->front();
 	parser->token_index = 0;
@@ -2048,6 +2155,7 @@ Parser::generate_tree(Lex_Context* lex_context) {
 	parser->root_node = new Ast_Block;
 	parser->focus = parser->root_node;
 	parser->current_block = parser->root_node;
+	parser->root_node->parent = nullptr;
 
 	while (parser->token) {
 		if (parser->matches_struct_declaration()) {
@@ -2064,6 +2172,8 @@ Parser::generate_tree(Lex_Context* lex_context) {
 			parser->handle_while();
 		} else if (parser->on("for")) {
 			parser->handle_for();
+		} else if (parser->on("return")) {
+			parser->handle_return();
 		} else if (parser->on("{")) {
 			parser->handle_block();
 		} else if (parser->on("}")) {

@@ -1,18 +1,17 @@
-Some_Struct :: struct {
-	field: int;
-	fptr: (int, float) -> void;
+square :: (n: int) -> int {
+	return n * n;
 }
 
-foo :: () -> void { }
-
-foo :: (n: int, a: float) -> void {
-
+square :: () -> int {
+	return 0;
 }
 
-main :: (x: int, z: float) -> void {
+main :: () -> void {
 	
-	meme: Some_Struct;
+	
+	variable: (int) -> int;
+
+	variable = square;
 		
-	meme.fptr = foo;
 	
 }
