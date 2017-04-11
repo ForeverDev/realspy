@@ -118,7 +118,8 @@ namespace Parser {
 		EXPRESSION_IDENTIFIER,
 		EXPRESSION_DATATYPE,
 		EXPRESSION_CAST,
-		EXPRESSION_CALL
+		EXPRESSION_CALL,
+		EXPRESSION_ARRAY_INDEX
 	};
 
 	enum Ast_Node_Type {
@@ -219,6 +220,16 @@ namespace Parser {
 		int nargs;
 	};
 
+	struct Expression_Array_Index : public Expression_Operator {
+		Expression_Array_Index(): Expression_Operator(EXPRESSION_ARRAY_INDEX) {}
+		virtual std::string to_string() const override;
+		virtual Datatype_Information* typecheck(Parse_Context *) override;
+		virtual void print(int) const override;
+
+		Expression* array;
+		Expression* index;
+	};
+
 	struct Expression_Integer_Literal : public Expression {
 		Expression_Integer_Literal(): Expression(EXPRESSION_INTEGER_LITERAL) { }
 		virtual std::string to_string() const override;
@@ -270,7 +281,7 @@ namespace Parser {
 		
 		bool has_name = true; // only used for procedure arguments	
 		std::string identifier;
-		Datatype_Information* dt;
+		Datatype_Information* dt = nullptr;
 		Token* identifier_token = nullptr;
 	};
 
@@ -287,6 +298,7 @@ namespace Parser {
 		bool is_byte() const { return type_name == "byte" && !is_pointer() && !is_array(); }
 		bool is_bool() const { return type_name == "bool" && !is_pointer() && !is_array(); }
 		bool is_void() const { return type_name == "void" && !is_pointer() && !is_array(); }
+		bool is_struct() const { return is_a_struct && !is_pointer() && !is_array(); }
 		bool matches_strict(const Datatype_Information&) const;
 
 		void fill_fields(const Datatype_Information&);
@@ -294,7 +306,9 @@ namespace Parser {
 		std::string type_name;
 		int ptr_dim = 0;
 		int arr_dim = 0;
+		std::vector<int> arr_size;
 		int size;
+		bool is_a_struct = false;
 	};
 
 	struct Struct_Field {
@@ -305,7 +319,7 @@ namespace Parser {
 	};
 
 	struct Struct_Information : public Datatype_Information {
-		Struct_Information() {}
+		Struct_Information() { is_a_struct = true; }
 		virtual Struct_Information* clone() const override;
 		Struct_Field* get_field(const std::string& id) {
 			for (auto field: fields) {
@@ -447,7 +461,6 @@ namespace Parser {
 			Byte_Information* type_byte;
 			Byte_Information* type_string;
 			Ast_Node* focus;
-			Ast_Block* root_node;
 			Ast_Block* current_block;
 			Ast_Procedure* current_procedure = nullptr;
 			bool guard_register_type = false;
@@ -476,10 +489,12 @@ namespace Parser {
 			bool matches_variable_declaration() const;
 			bool matches_procedure_declaration() const;
 			bool matches_inferred_variable_declaration() const;
+			bool matches_double_colon_declaration() const;
 
 			void handle_struct_declaration();
 			void handle_procedure_declaration();
 			void handle_variable_declaration();
+			void handle_constant_declaration();
 			void handle_inferred_variable_declaration();
 			void handle_standalone_statement();
 			void handle_if();
@@ -491,11 +506,12 @@ namespace Parser {
 			void append_node(Ast_Node*);
 
 			Variable_Declaration* parse_variable_declaration();
-			Struct_Field* parse_struct_field(Struct_Information*);
+			Struct_Field* parse_struct_field(Struct_Information *);
 			Datatype_Information* parse_datatype();
 			Procedure_Information* parse_procedure_descriptor();
 			Expression* parse_expression();
 			Expression* parse_expression_and_typecheck();
+			Expression* fold_expression(Expression *);
 
 			void mark(const std::string&, const std::string&);
 			void mark(const std::string&);
@@ -509,6 +525,7 @@ namespace Parser {
 			Variable_Declaration* get_local(const std::string&) const;
 
 		public:
+			Ast_Block* root_node;
 
 		friend Parse_Context* generate_tree(Lex_Context*);
 		friend class Expression;
@@ -521,6 +538,7 @@ namespace Parser {
 		friend class Expression_Identifier;
 		friend class Expression_Datatype;
 		friend class Expression_Call;
+		friend class Expression_Array_Index;
 	};
 
 	Parse_Context* generate_tree(Lex_Context*);

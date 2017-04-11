@@ -1,17 +1,9 @@
-square :: (n: int) -> int {
-	return n * n;
-}
-
-square :: () -> int {
-	return 0;
-}
-
 main :: () -> void {
 	
-	
-	variable: (int) -> int;
+	if (20 == 40) { }
 
-	variable = square;
-		
-	
+}
+
+some_procedure :: () -> int {
+
 }

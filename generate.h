@@ -1,0 +1,32 @@
+#ifndef GENERATE_H
+#define GENERATE_H
+
+#include "parse.h"
+
+using namespace Parser;
+
+namespace Generator {
+
+	class Generate_Context {
+		private:
+			std::ofstream output;
+			Parse_Context* context;
+	
+			void generate_expression(Expression *);
+			void generate_node(Ast_Node *);
+			void generate_if(Ast_If *);
+			void generate_procedure(Ast_Procedure *);
+			void generate_headers();
+			std::string make_procedure_name(const Ast_Procedure *);
+			std::string make_datatype(const Datatype_Information *);
+			
+		public:	
+
+		friend void generate_c_file(const std::string&, Parse_Context *);
+		friend class Parse_Context;
+	};
+
+	void generate_c_file(const std::string&, Parse_Context *);	
+};
+
+#endif

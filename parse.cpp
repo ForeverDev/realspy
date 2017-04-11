@@ -82,13 +82,15 @@ static const std::vector<Operator_Descriptor> operator_table {
 	Operator_Descriptor("!",        10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_BOOL}),
 	Operator_Descriptor("new",      10, ASSOC_RIGHT, OP_UNARY, {ENFORCE_DATATYPE}),
 	Operator_Descriptor(".",        11, ASSOC_LEFT, OP_BINARY, {}), // special case...
-	Operator_Descriptor("__CALL__", 11, ASSOC_LEFT, OP_UNARY, {}) // special case...
+	Operator_Descriptor("__CALL__", 11, ASSOC_LEFT, OP_UNARY, {}), // special case...
+	Operator_Descriptor("__INDX__", 11, ASSOC_LEFT, OP_UNARY, {}) // special case...
 };
 
 void
 Datatype_Information::fill_fields(const Datatype_Information& dt) {
 	ptr_dim = dt.ptr_dim;
 	arr_dim = dt.arr_dim;
+	arr_size = dt.arr_size;
 	type_name = dt.type_name; 
 }
 
@@ -355,6 +357,11 @@ Expression_Call::to_string() const {
 	return "CALL";
 }
 
+std::string
+Expression_Array_Index::to_string() const {
+	return "ARRAY_INDEX";
+}
+
 // ... print methods ...
 
 // helper function
@@ -399,6 +406,13 @@ Expression_Call::print(int indent = 0) const {
 	}
 }
 
+void
+Expression_Array_Index::print(int indent = 0) const {
+	Expression::print(indent);
+	array->print(indent + 1);
+	index->print(indent + 1);
+}
+
 // ... typecheck methods ...
 Datatype_Information*
 Expression_Binary::typecheck(Parse_Context* context) {
@@ -410,6 +424,21 @@ Expression_Binary::typecheck(Parse_Context* context) {
 			}
 		}
 		return false;	
+	};
+
+	auto is_assign = [](Binary_Operator_Type t) -> bool {
+		return (
+			t == ADDITION_BY ||
+			t == SUBTRACTION_BY ||
+			t == MULTIPLICATION_BY ||
+			t == DIVISION_BY ||
+			t == MODULUS_BY ||
+			t == BITWISE_AND_BY ||
+			t == BITWISE_OR_BY ||
+			t == BITWISE_XOR_BY ||
+			t == SHIFT_LEFT_BY ||
+			t == SHIFT_RIGHT_BY
+		);
 	};
 	
 	Datatype_Information* evaluated = nullptr;
@@ -574,6 +603,11 @@ Expression_Binary::typecheck(Parse_Context* context) {
 		message << "')";
 		context->report_error_at_indent(message.str(), tok->col);
 	}
+	
+	// arrays are not assignable
+	if (is_assign(value) && left_eval->arr_dim > 0) {
+		context->report_error_at_indent("arrays are not assignable", tok->col);
+	}
 
 	// comparison operators always result in bool
 	if (value == COMPARE || value == COMPARE_NOT
@@ -697,6 +731,9 @@ Expression_Cast::typecheck(Parse_Context* context) {
 		illegal_cast();
 	}
 
+	if (value->is_array() || op_type->is_pointer()) {
+		illegal_cast();
+	}
 
 	return eval = value;
 }
@@ -897,7 +934,6 @@ Expression_Call::typecheck(Parse_Context* context) {
 			sorted_arguments.push_back(comma_as_bin->right);
 			while (comma_as_bin->parent && comma_as_bin->right) {
 				comma_as_bin = static_cast<Expression_Binary *>(comma_as_bin->parent);
-				comma_as_bin->right->print();
 				comma_as_bin->right->typecheck(context);
 				sorted_arguments.push_back(comma_as_bin->right);
 			}	
@@ -909,7 +945,14 @@ Expression_Call::typecheck(Parse_Context* context) {
 
 	std::vector<Datatype_Information *> evals;
 	for (auto e: sorted_arguments) {
-		evals.push_back(e->eval);
+		if (e->eval->is_struct()) {
+			// if it's a raw struct implicitly pass by pointer
+			auto copy = e->eval->clone();
+			copy->ptr_dim = 1;
+			evals.push_back(copy);
+		} else {
+			evals.push_back(e->eval);
+		}
 	}
 	
 	arg_types = evals;	
@@ -958,6 +1001,34 @@ Expression_Call::typecheck(Parse_Context* context) {
 	}
 
 	return eval = proc_pi->ret;
+}
+
+Datatype_Information*
+Expression_Array_Index::typecheck(Parse_Context* context) {
+		
+	auto array_type = array->typecheck(context);
+	auto index_type = index->typecheck(context);
+
+	if (array_type->arr_dim < 1) {
+		std::stringstream message;
+		message << "attempt to index a non-array type (got type '";
+		message << array_type->to_string();
+		message << "')";
+		context->report_error_at_indent(message.str(), array->token->col);
+	}
+
+	if (!index_type->is_int()) {
+		std::stringstream message;
+		message << "array index must evaluate to an integer (got type '";
+		message << index_type->to_string();
+		message << "')";
+		context->report_error_at_indent(message.str(), index->token->col);
+	}
+
+	auto deref_type = array_type->clone();
+	deref_type->arr_dim--;
+	return eval = deref_type;
+
 }
 
 // AST NODE IMPLEMENTATION
@@ -1185,7 +1256,7 @@ void
 Parse_Context::eat(const std::string& word, const std::string& message) {
 	assert_token();
 	if (token->word != word) {
-		report_error(message + ", got token '" + token->word + "'");	
+		report_error_at_indent(message + ", got token '" + token->word + "'", token->col);	
 	}
 	eat();
 }
@@ -1314,7 +1385,6 @@ Parse_Context::get_local(const std::string& identifier) const {
 		if (!block_check) {
 			break;
 		}
-		block_check->print();
 		for (auto node: block_check->children) {
 			if (auto check = dynamic_cast<Ast_Declaration *>(node)) {
 				if (check->decl->identifier == identifier) {
@@ -1348,6 +1418,11 @@ Parse_Context::get_local(const std::string& identifier) const {
 bool
 Parse_Context::matches_struct_declaration() const {
 	return is_identifier() && on(1, "::") && on(2, "struct");
+}
+
+bool
+Parse_Context::matches_double_colon_declaration() const {
+	return is_identifier() && on(1, "::");
 }
 
 bool
@@ -1477,6 +1552,24 @@ Parse_Context::handle_procedure_declaration() {
 }
 
 void
+Parse_Context::handle_constant_declaration() {
+	eat();
+	auto err_tok = token;
+	eat("::");
+	mark(";");
+	auto const_expr = parse_expression_and_typecheck();
+	if (const_expr->type == EXPRESSION_INTEGER_LITERAL) {
+
+	} else if (const_expr->type == EXPRESSION_FLOAT_LITERAL) {
+
+	} else {
+		std::stringstream message;
+		message << "'::' can only be used to define constant expressions";
+		report_error_at_indent(message.str(), err_tok->col);
+	}
+}
+
+void
 Parse_Context::handle_variable_declaration() {
 	auto id_token = token;
 	auto node = new Ast_Declaration;
@@ -1487,8 +1580,6 @@ Parse_Context::handle_variable_declaration() {
 void
 Parse_Context::handle_inferred_variable_declaration() {
 	auto id_token = token;
-	auto node = new Ast_Declaration;
-	auto decl = new Variable_Declaration;
 	const auto& identifier = token->word;
 
 	eat();
@@ -1837,22 +1928,28 @@ Parse_Context::parse_expression() {
 			}
 			case TOKEN_OPERATOR: {
 				if (token->word == "(") {
-
 					if (token_index > start) {
 						auto prev = get_token(token_index - 1);
 						if (prev->word == ")" || prev->type == TOKEN_IDENTIFIER) {
-							auto call = new Expression_Call;
-							int save = marked_index;
-							auto tok = token;
-							eat("(");
-							mark("(", ")");
-							call->argument = parse_expression();
-							call->desc = get_operator_descriptor("__CALL__");
-							call->token = tok;
-							marked_index = save;
-							shunting_pops(call->desc);
-							operators.push_back(call);
-							break;
+							bool abort = false;
+							// if the previous token is a type, it could be a cast.... abort
+							if (prev->type == TOKEN_IDENTIFIER && get_type(prev->word)) {
+								abort = true;
+							}
+							if (!abort) {
+								auto call = new Expression_Call;
+								int save = marked_index;
+								auto tok = token;
+								eat("(");
+								mark("(", ")");
+								call->argument = parse_expression();
+								call->desc = get_operator_descriptor("__CALL__");
+								call->token = tok;
+								marked_index = save;
+								shunting_pops(call->desc);
+								operators.push_back(call);
+								break;
+							}
 						}
 					}
 
@@ -1884,6 +1981,18 @@ Parse_Context::parse_expression() {
 					push->value = parse_datatype();
 					push->desc = get_operator_descriptor("__CAST__"); 
 					focus_token(--token_index); // go back one token, end on datatype
+					operators.push_back(push);
+				} else if (token->word == "[") {
+					auto push = new Expression_Array_Index;
+					auto tok = token;
+					int save = marked_index;
+					eat("[");
+					mark("[", "]");
+					push->index = parse_expression();
+					push->token = tok;
+					push->desc = get_operator_descriptor("__INDX__");
+					marked_index = save;
+					shunting_pops(push->desc);
 					operators.push_back(push);
 				} else {
 					auto desc = get_operator_descriptor(token->word);
@@ -1927,7 +2036,7 @@ Parse_Context::parse_expression() {
 		postfix.push_back(back);
 		operators.pop_back(); 
 	}
-	
+
 	// now postfix contains the expression in RPN.... convert to a tree now
 	
 	std::vector<Expression *> tree;
@@ -1985,6 +2094,13 @@ Parse_Context::parse_expression() {
 				tree.push_back(call);	
 				break;
 			}
+			case EXPRESSION_ARRAY_INDEX: {
+				auto index = static_cast<Expression_Array_Index *>(e);
+				index->array = safe_pop();
+				index->array->parent = index;
+				tree.push_back(index);
+				break;
+			}
 		}
 	}
 
@@ -1997,11 +2113,206 @@ Parse_Context::parse_expression() {
 }
 
 Expression*
+Parse_Context::fold_expression(Expression* e) {
+	
+	if (!e) {
+		return nullptr;
+	}
+
+	Expression* replacement = nullptr;
+
+	auto get_result_binary = [](Binary_Operator_Type t, bool* did_fold, auto left, decltype(left) right) -> decltype(left) {
+		using T = decltype(left);
+		T result;
+		switch (t) {
+			case ADDITION:
+				result = left + right;
+				break;
+			case SUBTRACTION:
+				result = left - right;
+				break;
+			case MULTIPLICATION:
+				result = left * right;
+				break;
+			case DIVISION:
+				result = left / right;
+				break;
+			case MODULUS:
+				result = (int)left % (int)right;
+				break;
+			case BITWISE_AND:
+				result = (int)left & (int)right;
+				break;
+			case BITWISE_OR:
+				result = (int)left | (int)right;
+				break;
+			case SHIFT_LEFT:
+				result = (int)left << (int)right;
+				break;
+			case SHIFT_RIGHT:
+				result = (int)left >> (int)right;
+				break;
+			default:
+				*did_fold = false;
+				return result;
+		}
+		*did_fold = true;
+		return result;
+	};
+
+	auto get_result_unary = [](Unary_Operator_Type t, bool* did_fold, auto operand) -> decltype(operand) {
+		using T = decltype(operand);
+		T result;
+		switch (t) {
+			case LOGICAL_NOT:
+				result = !operand;
+				break;
+			case BITWISE_NOT:
+				result = ~operand;
+				break;
+			case DEREFERENCE:
+				result = *reinterpret_cast<T *>(static_cast<intptr_t>(operand));
+				break;
+			default:
+				*did_fold = false;
+				return result;
+		}		
+		*did_fold = true;
+		return result;
+	};
+
+	switch (e->type) {
+		case EXPRESSION_OPERATOR_BINARY: {
+			auto bin = static_cast<Expression_Binary *>(e);
+			auto left = fold_expression(bin->left);
+			auto right = fold_expression(bin->right);
+			
+			// works for two same types	
+			auto condense_binary = [&](auto left_exp, decltype(left_exp) right_exp) -> decltype(left_exp) {
+				using T = typename std::remove_pointer<decltype(left_exp)>::type;
+				auto left = static_cast<T *>(left_exp)->value;	
+				auto right = static_cast<T *>(right_exp)->value;	
+				bool did_fold = false;
+				auto result = get_result_binary(bin->value, &did_fold, left, right);
+				if (!did_fold) {
+					return nullptr;
+				}
+				auto rep = new T;
+				rep->value = result;
+				rep->parent = e->parent;
+				rep->word = std::to_string(result);
+				rep->is_l_value = e->is_l_value;
+				rep->side = e->side;
+				return rep;
+			};
+
+			if (left->type == EXPRESSION_INTEGER_LITERAL && right->type == EXPRESSION_INTEGER_LITERAL) {
+				replacement = condense_binary(static_cast<Expression_Integer_Literal *>(left),
+											  static_cast<Expression_Integer_Literal *>(right));
+				if (replacement) {
+					replacement->eval = type_int;
+				}
+			} else if (left->type == EXPRESSION_FLOAT_LITERAL && right->type == EXPRESSION_FLOAT_LITERAL) {
+				replacement = condense_binary(static_cast<Expression_Float_Literal *>(left),
+											  static_cast<Expression_Float_Literal *>(right));
+				if (replacement) {
+					replacement->eval = type_float;
+				}
+			}
+			break;
+		}
+		case EXPRESSION_OPERATOR_UNARY:	{
+			auto un = static_cast<Expression_Unary *>(e);
+			auto operand = un->operand;
+			bool did_fold = false;
+			if (operand->type == EXPRESSION_INTEGER_LITERAL) {
+				int op = static_cast<Expression_Integer_Literal *>(operand)->value;
+				int result = get_result_unary(un->value, &did_fold, op);
+				if (!did_fold) {
+					return e;
+				}
+				auto rep = new Expression_Integer_Literal;
+				rep->value = result;
+				rep->parent = e->parent;
+				rep->word = std::to_string(result);
+				rep->eval = type_float;
+				rep->is_l_value = e->is_l_value;
+				rep->side = e->side;
+				replacement = rep;
+			}
+			break;
+		}
+		case EXPRESSION_CAST: {
+			auto cast = static_cast<Expression_Cast *>(e);
+			auto target = cast->value; 
+			auto operand = fold_expression(cast->operand);
+			if (
+				(target->is_pointer() || target->is_int()) && 
+				(operand->type == EXPRESSION_INTEGER_LITERAL || operand->type == EXPRESSION_FLOAT_LITERAL)
+			) {
+				auto rep = new Expression_Integer_Literal;
+				if (operand->type == EXPRESSION_INTEGER_LITERAL) {
+					int val = static_cast<Expression_Integer_Literal *>(operand)->value;
+					rep->value = val;
+					rep->word = std::to_string(val);
+				} else {
+					double val = static_cast<Expression_Float_Literal *>(operand)->value;
+					rep->value = (int)val;
+					rep->word = std::to_string(val);
+				}
+				rep->eval = type_int;
+				rep->parent = e->parent;
+				rep->is_l_value = e->is_l_value;
+				rep->side = e->side;
+				replacement = rep;
+			}
+			break;
+		}
+		default:
+			break;
+	}
+
+	if (replacement) {
+		if (e->parent) {
+			switch (e->parent->type) {
+				case EXPRESSION_OPERATOR_BINARY: {
+					auto bin = static_cast<Expression_Binary *>(e->parent);
+					switch (e->side) {
+						case Expression::LEAF_LEFT:
+							bin->left = replacement;
+							break;	
+						case Expression::LEAF_RIGHT:
+							bin->right = replacement;
+							break;	
+					}
+					break;
+				}
+				case EXPRESSION_OPERATOR_UNARY: {
+					auto un = static_cast<Expression_Unary *>(e->parent);
+					un->operand = replacement;
+					break;
+				}
+				case EXPRESSION_CAST: {
+					auto cast = static_cast<Expression_Cast *>(e->parent);
+					cast->operand = replacement;
+					break;
+				}
+				default:
+					break;
+			}
+		}
+		return replacement;
+	}
+	
+	return e;
+}
+
+Expression*
 Parse_Context::parse_expression_and_typecheck() {
 	auto exp = parse_expression();
 	if (exp) {
-		exp->print();
 		exp->typecheck(this);
+		exp = fold_expression(exp);
 	}
 	return exp;
 }
@@ -2014,13 +2325,26 @@ Parse_Context::parse_procedure_descriptor() {
 	eat("(");
 
 	while (true) {
+		Token* dt_head = token;
+		bool must_be_pointer_die = false;
 		if (matches_datatype()) {
 			auto unnamed = new Variable_Declaration;
 			unnamed->dt = parse_datatype();
 			unnamed->has_name = false;
+			if (unnamed->dt->is_struct()) {
+				std::stringstream message;
+				message << "a procedure cannot take a raw object as a parameter - it can only accept a pointer";
+				report_error_at_indent(message.str(), dt_head->col);
+			}
 			info->args.push_back(unnamed);
 		} else if (matches_variable_declaration()) {
-			info->args.push_back(parse_variable_declaration());
+			auto decl = parse_variable_declaration();
+			if (decl->dt->is_struct()) {
+				std::stringstream message;
+				message << "a procedure cannot take a raw object as a parameter - it can only accept a pointer";
+				report_error_at_indent(message.str(), dt_head->col);
+			}
+			info->args.push_back(decl);
 		} else {
 			break;
 		}
@@ -2040,18 +2364,35 @@ Parse_Context::parse_datatype() {
 
 	int ptr_dim = 0;
 	int arr_dim = 0;
+	std::vector<int> arr_size;
+
+	while (on("[")) {
+		arr_dim++;
+		auto err_tok = token;
+		eat();
+		mark("[", "]");
+		auto size = parse_expression_and_typecheck();
+		if (!size) {
+			report_error_at_indent("expected constant array size between '[' and ']'", err_tok->col);
+		}
+		if (!size->eval->is_int()) {
+			std::stringstream message;
+			message << "array size must be a constant integer (got type '";
+			message << size->eval->to_string();
+			message << "')";
+			report_error_at_indent(message.str(), err_tok->col);
+		}
+		if (size->type != EXPRESSION_INTEGER_LITERAL) {
+			report_error_at_indent("array size must be a constant integer", err_tok->col); 
+		}
+		arr_size.push_back(static_cast<Expression_Integer_Literal *>(size)->value);
+		eat("]");
+	}
 	
 	while (on("^")) {
 		ptr_dim++;
 		eat();
 	}	
-
-	while (on("[") && on(1, "]")) {
-		arr_dim++;
-		eat();
-		eat();
-	}
-
 	
 	if (on("(")) {
 		
@@ -2064,11 +2405,12 @@ Parse_Context::parse_datatype() {
 		// TODO MAKE A REAL COPY HERE!!! THIS IS CURRENTLY VERRRRYYYYY BAD!!!!
 		auto templ = get_type(token->word);
 		if (!templ) {
-			report_error("invalid type name '" + token->word + "'");
+			report_error_at_indent("invalid type name '" + token->word + "'", token->col);
 		}
 		auto copy = templ->clone();
 		copy->ptr_dim = ptr_dim;
 		copy->arr_dim = arr_dim;
+		copy->arr_size = std::move(arr_size);
 		eat();
 		return copy;
 	}
@@ -2158,14 +2500,18 @@ Parser::generate_tree(Lex_Context* lex_context) {
 	parser->root_node->parent = nullptr;
 
 	while (parser->token) {
-		if (parser->matches_struct_declaration()) {
-			parser->handle_struct_declaration();
-		} else if (parser->matches_procedure_declaration()) {
-			parser->handle_procedure_declaration();
-		} else if (parser->matches_variable_declaration()) {
+		if (parser->matches_variable_declaration()) {
 			parser->handle_variable_declaration();
 		} else if (parser->matches_inferred_variable_declaration()) {
 			parser->handle_inferred_variable_declaration();
+		} else if (parser->matches_double_colon_declaration()) {
+			if (parser->on(2, "struct")) {
+				parser->handle_struct_declaration();
+			} else if (parser->on(2, "(")) {
+				parser->handle_procedure_declaration();
+			} else {
+				parser->handle_constant_declaration();
+			}
 		} else if (parser->on("if")) {
 			parser->handle_if();
 		} else if (parser->on("while")) {
