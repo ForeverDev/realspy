@@ -279,6 +279,7 @@ namespace Parser {
 		Variable_Declaration* clone() const;
 		std::string to_string() const;
 		
+		int tag = -1; // -1 for debugging
 		bool has_name = true; // only used for procedure arguments	
 		std::string identifier;
 		Datatype_Information* dt = nullptr;
@@ -300,7 +301,6 @@ namespace Parser {
 		bool is_void() const { return type_name == "void" && !is_pointer() && !is_array(); }
 		bool is_struct() const { return is_a_struct && !is_pointer() && !is_array(); }
 		bool matches_strict(const Datatype_Information&) const;
-
 		void fill_fields(const Datatype_Information&);
 
 		std::string type_name;
@@ -434,7 +434,7 @@ namespace Parser {
 	struct Ast_Declaration : public Ast_Node {
 		Ast_Declaration(): Ast_Node(NODE_DECLARATION) {}
 		virtual void print(int) const override;
-
+		
 		Variable_Declaration* decl = nullptr;
 	};
 
@@ -450,6 +450,7 @@ namespace Parser {
 			int token_index;
 			int marked_index;
 			int fail_indent = -1;
+			int local_count = 0;
 			Token* token;	
 			Lex_Context* lex_context;	
 			std::vector<Datatype_Information *> defined_types;

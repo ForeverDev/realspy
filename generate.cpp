@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <functional>
 #include "generate.h"
 
 using namespace Parser;
@@ -7,13 +8,130 @@ using namespace Generator;
 
 static const std::string REG_NAME = "__R__";
 static const std::string SPYRE_TYPE_NAME = "__T__";
+static const std::string VAR_NAME = "__V__";
 static const int		 NUM_FRAME_REGISTERS = 12;
 
-void
+int
 Generate_Context::generate_expression(Expression* exp) {
 	if (!exp) {
-		return;
+		return -1;
 	}
+
+	bool register_marks[NUM_FRAME_REGISTERS] = {};
+
+	auto mark_register = [&](int r) {
+		register_marks[r] = true;
+	};
+
+	auto unmark_register = [&](int r) {
+		std::cout << r << std::endl;
+		register_marks[r] = false;
+	};
+
+	auto get_register = [&]() {
+		for (int i = 0; i < NUM_FRAME_REGISTERS; i++) {
+			if (!register_marks[i]) {
+				mark_register(i);
+				return i;
+			}
+		}
+		return -1;
+	};
+
+	auto make_register = [&](int r) -> std::string {
+		return REG_NAME + "[" + std::to_string(r) + "]";
+	};
+	
+	auto make_register_field = [&](int r, const std::string& field) -> std::string {
+		return make_register(r) + "." + field;
+	};
+
+	auto move_register = [&](int from, int to) {
+		output << make_register(to) << " = " << make_register(from) << ";";	
+	};
+
+	auto make_binary = [&](int to, int r0, int r1, const std::string& field, Binary_Operator_Type t) {
+		output << make_register_field(to, field);
+		output << " = ";
+		output << make_register_field(r0, field);
+		output << " ";
+		output << Expression_Binary::type_to_word(t);
+		output << " ";
+		output << make_register_field(r1, field);
+		output << ";";
+	};
+
+	auto make_assignment = [&](int from, int to, const std::string& field, Binary_Operator_Type t) {
+		output << make_register_field(to, field);
+		output << " ";
+		output << Expression_Binary::type_to_word(t);
+		output << " ";
+		output << make_register_field(from, field);
+		output << ";";
+	};
+
+	auto make_variable = [&](const Variable_Declaration* decl) -> std::string {
+		return VAR_NAME + std::to_string(decl->tag);	
+	};
+
+	auto newline = [&]() {
+		output << std::endl;
+	};
+	
+	// this lambda is recursive, so an explicit type is needed.....
+	std::function<int (Expression *)> do_generate = [&](Expression* exp) -> int {
+		switch (exp->type) {
+			case EXPRESSION_OPERATOR_BINARY: {
+				auto bin = static_cast<Expression_Binary *>(exp);
+				switch (bin->value) {
+					case ADDITION: {
+						int r0 = do_generate(bin->left);
+						int r1 = do_generate(bin->right);
+						make_binary(r0, r0, r1, "i", bin->value); 
+						newline();
+						unmark_register(r1);
+						return r0;
+					}
+					case ASSIGNMENT: {
+						int r0 = do_generate(bin->left);
+						int r1 = do_generate(bin->right);
+						make_assignment(r1, r0, "i", bin->value);
+						newline();
+						unmark_register(r1);
+						return r0;
+					}
+
+				}
+				break;
+			}
+			case EXPRESSION_INTEGER_LITERAL: {
+				auto lit = static_cast<Expression_Integer_Literal *>(exp);
+				int reg = get_register();
+				output << make_register_field(reg, "i");
+				output << " = ";
+				output << std::to_string(lit->value);
+				output << ";";
+				newline();
+				return reg;
+			}
+			case EXPRESSION_IDENTIFIER: {
+				auto id = static_cast<Expression_Identifier *>(exp);
+				int reg = get_register();
+				if (id->variable) {
+					output << make_register_field(reg, "i");
+					output << " = ";
+					output << make_variable(id->variable);
+					output << ";";
+					newline();	
+				}
+				return reg;
+			}
+			default:
+				std::cout << "wut\n";
+		}
+	};
+	
+	do_generate(exp);
 		
 }
 
@@ -66,6 +184,9 @@ Generate_Context::generate_node(Ast_Node* node) {
 		case NODE_IF:
 			generate_if(static_cast<Ast_If *>(node));
 			break;
+		case NODE_STATEMENT:
+			generate_expression(static_cast<Ast_Statement *>(node)->expression);	
+			break;
 		default:
 			break;
 	}
@@ -94,9 +215,8 @@ Generate_Context::make_datatype(const Datatype_Information* dt) {
 void
 Generator::generate_c_file(const std::string& out_name, Parse_Context* context) {
 	
-	Generate_Context gc;
+	Generate_Context gc(out_name);
 	gc.context = context;
-	gc.output = std::ofstream(out_name, std::ios::out);
 
 	if (!gc.output.is_open()) {
 		std::cerr << "couldn't open " << out_name << " for writing\n";

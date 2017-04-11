@@ -1524,6 +1524,9 @@ Parse_Context::handle_procedure_declaration() {
 	node->info = info;
 	if (on("{")) {
 
+		// reset local count
+		local_count = 0;
+
 		// register now so the right line is reported
 		register_procedure(node);
 		current_procedure = node;
@@ -1773,6 +1776,7 @@ Parse_Context::append_node(Ast_Node* node) {
 
 	if (node->type == NODE_DECLARATION) {
 		auto decl = static_cast<Ast_Declaration *>(node)->decl;
+		decl->tag = local_count++;
 		if (get_local(decl->identifier)) {
 			std::stringstream message;
 			message << "redeclaration of variable '";

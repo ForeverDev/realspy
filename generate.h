@@ -1,6 +1,7 @@
 #ifndef GENERATE_H
 #define GENERATE_H
 
+#include <fstream>
 #include "parse.h"
 
 using namespace Parser;
@@ -11,8 +12,9 @@ namespace Generator {
 		private:
 			std::ofstream output;
 			Parse_Context* context;
-	
-			void generate_expression(Expression *);
+			
+			Generate_Context(const std::string& fn): output(fn, std::ios::out) {} 	
+			int generate_expression(Expression *);
 			void generate_node(Ast_Node *);
 			void generate_if(Ast_If *);
 			void generate_procedure(Ast_Procedure *);
