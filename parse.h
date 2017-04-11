@@ -171,6 +171,8 @@ namespace Parser {
 		virtual std::string to_string() const override; 
 		virtual Datatype_Information* typecheck(Parse_Context *) override;
 		virtual void print(int) const override;
+		
+		bool is_assign() const;
 
 		static Binary_Operator_Type word_to_type(const std::string&);
 		static std::string type_to_word(Binary_Operator_Type);

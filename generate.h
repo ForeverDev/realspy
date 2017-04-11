@@ -18,7 +18,9 @@ namespace Generator {
 			void generate_node(Ast_Node *);
 			void generate_if(Ast_If *);
 			void generate_procedure(Ast_Procedure *);
+			void generate_declaration(Ast_Declaration *);
 			void generate_headers();
+			std::string make_variable(const Variable_Declaration *);
 			std::string make_procedure_name(const Ast_Procedure *);
 			std::string make_datatype(const Datatype_Information *);
 			

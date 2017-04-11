@@ -413,6 +413,22 @@ Expression_Array_Index::print(int indent = 0) const {
 	index->print(indent + 1);
 }
 
+bool
+Expression_Binary::is_assign() const {
+	return (
+		value == ADDITION_BY ||
+		value == SUBTRACTION_BY ||
+		value == MULTIPLICATION_BY ||
+		value == DIVISION_BY ||
+		value == MODULUS_BY ||
+		value == BITWISE_AND_BY ||
+		value == BITWISE_OR_BY ||
+		value == BITWISE_XOR_BY ||
+		value == SHIFT_LEFT_BY ||
+		value == SHIFT_RIGHT_BY
+	);
+}
+
 // ... typecheck methods ...
 Datatype_Information*
 Expression_Binary::typecheck(Parse_Context* context) {
@@ -424,21 +440,6 @@ Expression_Binary::typecheck(Parse_Context* context) {
 			}
 		}
 		return false;	
-	};
-
-	auto is_assign = [](Binary_Operator_Type t) -> bool {
-		return (
-			t == ADDITION_BY ||
-			t == SUBTRACTION_BY ||
-			t == MULTIPLICATION_BY ||
-			t == DIVISION_BY ||
-			t == MODULUS_BY ||
-			t == BITWISE_AND_BY ||
-			t == BITWISE_OR_BY ||
-			t == BITWISE_XOR_BY ||
-			t == SHIFT_LEFT_BY ||
-			t == SHIFT_RIGHT_BY
-		);
 	};
 	
 	Datatype_Information* evaluated = nullptr;
@@ -605,7 +606,7 @@ Expression_Binary::typecheck(Parse_Context* context) {
 	}
 	
 	// arrays are not assignable
-	if (is_assign(value) && left_eval->arr_dim > 0) {
+	if (is_assign() && left_eval->arr_dim > 0) {
 		context->report_error_at_indent("arrays are not assignable", tok->col);
 	}
 

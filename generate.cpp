@@ -9,6 +9,8 @@ using namespace Generator;
 static const std::string REG_NAME = "__R__";
 static const std::string SPYRE_TYPE_NAME = "__T__";
 static const std::string VAR_NAME = "__V__";
+static const std::string INT_NAME = "int64_t";
+static const std::string FLOAT_NAME = "double";
 static const int		 NUM_FRAME_REGISTERS = 12;
 
 int
@@ -61,17 +63,17 @@ Generate_Context::generate_expression(Expression* exp) {
 		output << ";";
 	};
 
-	auto make_assignment = [&](int from, int to, const std::string& field, Binary_Operator_Type t) {
+	auto make_assignment = [&](int from, int to, const std::string& field, 
+							   const std::string& pointer_type, Binary_Operator_Type t) {
+		output << "*(";
+		output << pointer_type;
+		output << " *)";
 		output << make_register_field(to, field);
 		output << " ";
 		output << Expression_Binary::type_to_word(t);
 		output << " ";
 		output << make_register_field(from, field);
 		output << ";";
-	};
-
-	auto make_variable = [&](const Variable_Declaration* decl) -> std::string {
-		return VAR_NAME + std::to_string(decl->tag);	
 	};
 
 	auto newline = [&]() {
@@ -92,10 +94,20 @@ Generate_Context::generate_expression(Expression* exp) {
 						unmark_register(r1);
 						return r0;
 					}
-					case ASSIGNMENT: {
+					case ASSIGN:
+					case ADDITION_BY:
+					case SUBTRACTION_BY:
+					case MULTIPLICATION_BY:
+					case DIVISION_BY:
+					case MODULUS_BY:
+					case BITWISE_AND_BY:
+					case BITWISE_OR_BY:
+					case BITWISE_XOR_BY:
+					case SHIFT_LEFT_BY:
+					case SHIFT_RIGHT_BY: {
 						int r0 = do_generate(bin->left);
 						int r1 = do_generate(bin->right);
-						make_assignment(r1, r0, "i", bin->value);
+						make_assignment(r1, r0, "i", INT_NAME, bin->value);
 						newline();
 						unmark_register(r1);
 						return r0;
@@ -117,10 +129,21 @@ Generate_Context::generate_expression(Expression* exp) {
 			case EXPRESSION_IDENTIFIER: {
 				auto id = static_cast<Expression_Identifier *>(exp);
 				int reg = get_register();
+				bool child_of_assign = false;
+				if (exp->parent && exp->parent->type == EXPRESSION_OPERATOR_BINARY) {
+					auto bin_parent = static_cast<Expression_Binary *>(exp->parent);
+					child_of_assign = bin_parent->is_assign();	
+				}
 				if (id->variable) {
-					output << make_register_field(reg, "i");
-					output << " = ";
-					output << make_variable(id->variable);
+					if (child_of_assign) {
+						output << make_register_field(reg, "p");
+						output << " = &";
+						output << make_variable(id->variable);
+					} else {
+						output << make_register_field(reg, "i");
+						output << " = ";
+						output << make_variable(id->variable);
+					}
 					output << ";";
 					newline();	
 				}
@@ -156,6 +179,25 @@ Generate_Context::generate_procedure(Ast_Procedure* node) {
 	output << "}\n";
 }
 
+std::string
+Generate_Context::make_variable(const Variable_Declaration* decl) {
+	return VAR_NAME + std::to_string(decl->tag);	
+}
+
+void
+Generate_Context::generate_declaration(Ast_Declaration* node) {
+	auto dt = node->decl->dt;
+	auto var_name = make_variable(node->decl);
+	output << SPYRE_TYPE_NAME << " ";
+	output << var_name;
+	for (int i = 0; i < dt->arr_dim; i++) {
+		output << "[";
+		output << std::to_string(dt->arr_size[i]);
+		output << "]";
+	}
+	output << ";\n";
+}
+
 void
 Generate_Context::generate_headers() {
 	output << "#include <stdio.h>\n";
@@ -186,6 +228,9 @@ Generate_Context::generate_node(Ast_Node* node) {
 			break;
 		case NODE_STATEMENT:
 			generate_expression(static_cast<Ast_Statement *>(node)->expression);	
+			break;
+		case NODE_DECLARATION:
+			generate_declaration(static_cast<Ast_Declaration *>(node));
 			break;
 		default:
 			break;
