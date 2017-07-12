@@ -216,6 +216,7 @@ namespace Parser {
 		virtual void print(int) const override;
 	
 		std::vector<Datatype_Information *> arg_types;
+        std::vector<Expression *> arg_expression;
 		std::string call_sig;
 		Expression* proc;
 		Expression* argument;
@@ -523,12 +524,12 @@ namespace Parser {
 			void register_procedure(Ast_Procedure* );
 
 			Ast_Procedure* get_procedure(const std::string&, const std::string&) const;
-			std::vector<Ast_Procedure *> get_all_procedures(const std::string&) const;
 			Datatype_Information* get_type(const std::string&) const;
 			Variable_Declaration* get_local(const std::string&) const;
 
 		public:
 			Ast_Block* root_node;
+			std::vector<Ast_Procedure *> get_all_procedures(const std::string&) const;
 
 		friend Parse_Context* generate_tree(Lex_Context*);
 		friend class Expression;

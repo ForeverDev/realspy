@@ -145,7 +145,10 @@ Procedure_Information::make_signature(const std::vector<Variable_Declaration *>&
 	// types of its arguments concatenated
 	std::stringstream sig;
 	for (const auto arg: call_info) {
-		sig << arg->dt->to_string();	
+        sig << arg->dt->type_name;
+        if (arg->dt->ptr_dim > 0) {
+            sig << "p" << arg->dt->ptr_dim;
+        }
 	}
 	return sig.str();
 }
@@ -154,7 +157,10 @@ std::string
 Procedure_Information::make_signature(const std::vector<Datatype_Information *>& call_info) {
 	std::stringstream sig;
 	for (const auto arg: call_info) {
-		sig << arg->to_string();	
+		sig << arg->type_name;
+        if (arg->ptr_dim > 0) {
+            sig << "p" << arg->ptr_dim;
+        }
 	}
 	return sig.str();
 }
@@ -917,8 +923,6 @@ Expression_Call::typecheck(Parse_Context* context) {
 									    token->col);
 	}
 	*/
-
-	std::vector<Expression *> sorted_arguments;
 	
 	if (argument) {
 		if (argument->is_binary_type(COMMA)) {
@@ -931,21 +935,21 @@ Expression_Call::typecheck(Parse_Context* context) {
 			auto comma_as_bin = static_cast<Expression_Binary *>(lowest_comma);
 			comma_as_bin->left->typecheck(context);
 			comma_as_bin->right->typecheck(context);
-			sorted_arguments.push_back(comma_as_bin->left);
-			sorted_arguments.push_back(comma_as_bin->right);
+			arg_expression.push_back(comma_as_bin->left);
+			arg_expression.push_back(comma_as_bin->right);
 			while (comma_as_bin->parent && comma_as_bin->right) {
 				comma_as_bin = static_cast<Expression_Binary *>(comma_as_bin->parent);
 				comma_as_bin->right->typecheck(context);
-				sorted_arguments.push_back(comma_as_bin->right);
+				arg_expression.push_back(comma_as_bin->right);
 			}	
 		} else {
 			argument->typecheck(context);
-			sorted_arguments.push_back(argument);
+			arg_expression.push_back(argument);
 		}
 	}
 
 	std::vector<Datatype_Information *> evals;
-	for (auto e: sorted_arguments) {
+	for (auto e: arg_expression) {
 		if (e->eval->is_struct()) {
 			// if it's a raw struct implicitly pass by pointer
 			auto copy = e->eval->clone();
@@ -997,7 +1001,7 @@ Expression_Call::typecheck(Parse_Context* context) {
 			message << "')\nnote, signature of procedure is: '";
 			message << proc_pi->to_string();
 			message << "'";
-			context->report_error_at_indent(message.str(), sorted_arguments[i]->token->col);
+			context->report_error_at_indent(message.str(), arg_expression[i]->token->col);
 		}
 	}
 
@@ -2533,8 +2537,6 @@ Parser::generate_tree(Lex_Context* lex_context) {
 			parser->handle_standalone_statement();
 		}
 	}
-
-	parser->root_node->print();
 
 	return parser;
 

@@ -82,6 +82,7 @@ Generate_Context::generate_expression(Expression* exp) {
 	
 	// this lambda is recursive, so an explicit type is needed.....
 	std::function<int (Expression *)> do_generate = [&](Expression* exp) -> int {
+
 		switch (exp->type) {
 			case EXPRESSION_OPERATOR_BINARY: {
 				auto bin = static_cast<Expression_Binary *>(exp);
@@ -112,7 +113,8 @@ Generate_Context::generate_expression(Expression* exp) {
 						unmark_register(r1);
 						return r0;
 					}
-
+                    default:
+                        break;
 				}
 				break;
 			}
@@ -120,6 +122,16 @@ Generate_Context::generate_expression(Expression* exp) {
 				auto lit = static_cast<Expression_Integer_Literal *>(exp);
 				int reg = get_register();
 				output << make_register_field(reg, "i");
+				output << " = ";
+				output << std::to_string(lit->value);
+				output << ";";
+				newline();
+				return reg;
+			}
+			case EXPRESSION_FLOAT_LITERAL: {
+				auto lit = static_cast<Expression_Float_Literal *>(exp);
+				int reg = get_register();
+				output << make_register_field(reg, "f");
 				output << " = ";
 				output << std::to_string(lit->value);
 				output << ";";
@@ -147,14 +159,41 @@ Generate_Context::generate_expression(Expression* exp) {
 					output << ";";
 					newline();	
 				}
+                auto all = context->get_all_procedures(id->value);
+                if (all.size() == 1) {
+                    output << make_register_field(reg, "p");
+                    output << "=";
+                    output << all[0]->info->type_name << all[0]->info->get_signature() << ";" << std::endl;
+                }
 				return reg;
 			}
+            case EXPRESSION_CALL: {
+                auto call = static_cast<Expression_Call *>(exp);
+                int call_reg = do_generate(call->proc);
+                for (auto& arg: call->arg_expression) {
+                    int arg_reg = do_generate(arg);
+                }
+                output << make_register_field(call_reg, "p");
+                output << "(";
+                size_t args = call->arg_expression.size();
+                for (int i = 0; i < args; i++) {
+                    output << make_register_field(call_reg + i + 1, make_prefix(call->arg_expression[i]->eval));
+                    if (i < args - 1) {
+                        output << ", ";
+                    }
+                }
+                output << ");\n";
+                return call_reg;
+            }
 			default:
-				std::cout << "wut\n";
+                return 0;
 		}
+
+        // won't be reached but silences warning
+        return 0;
 	};
 	
-	do_generate(exp);
+	return do_generate(exp);
 		
 }
 
@@ -182,6 +221,20 @@ Generate_Context::generate_procedure(Ast_Procedure* node) {
 std::string
 Generate_Context::make_variable(const Variable_Declaration* decl) {
 	return VAR_NAME + std::to_string(decl->tag);	
+}
+
+std::string
+Generate_Context::make_prefix(const Datatype_Information* dt) {
+    if (dt->is_float()) {
+        return "f";
+    }
+    if (dt->is_pointer()) {
+        return "p";
+    }
+    if (dt->is_byte()) {
+        return "c";
+    }
+    return "i";
 }
 
 void

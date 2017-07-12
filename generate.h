@@ -23,6 +23,7 @@ namespace Generator {
 			std::string make_variable(const Variable_Declaration *);
 			std::string make_procedure_name(const Ast_Procedure *);
 			std::string make_datatype(const Datatype_Information *);
+            std::string make_prefix(const Datatype_Information *);
 			
 		public:	
 

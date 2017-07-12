@@ -1,11 +1,9 @@
-main :: () -> void {
-	
-	x: int;
-
-	x = 20 * 30;
-
+foo :: (n: int, m: float) -> int {
+    return 0;
 }
 
-some_procedure :: () -> int {
+main :: () -> void {
+    
+    a := foo(10, 13.2);
 
 }
